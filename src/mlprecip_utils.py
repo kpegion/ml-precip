@@ -238,3 +238,53 @@ def plotComposites(ds,index_name,totals,suptitle,labels,clevs,cmap,figfile):
     
     # Save to file
     plt.savefig(figfile)
+    
+def getPrecipData(fnames,sdate,edate):
+    
+    # Read Data
+    ds=xr.open_mfdataset(fnames,combine='by_coords').sel(time=slice(sdate,edate))
+    
+    # Remove duplicate times?
+    ds=ds.sel(time=~ds.get_index("time").duplicated())
+    
+    return ds
+
+def calcRatios(ds,index_name,v,thresh):
+    
+    above=(ds[v].where(ds[v]>thresh)).groupby(ds[index_name+'_bins']).count(dim='time')
+    below=(ds[v].where(ds[v]<thresh)).groupby(ds[index_name+'_bins']).count(dim='time')
+    ratio=above/below 
+    
+    return above,below,ratio
+
+def plotRatios(da,index_name,suptitle,labels,clevs,cmap,figfile):
+
+    # Define map region and center longitude
+    lonreg=(269,283)
+    latreg=(24,36)
+    lon_0=290
+
+    f, axs = pplt.subplots(ncols=1, nrows=3,
+                           proj='pcarree',proj_kw={'lon_0': lon_0},
+                           width=8.5,height=11.0)
+
+    dim_str=index_name+'_bins'
+    nbins=len(da[dim_str])
+    
+    norm = pplt.Norm('diverging', vcenter=1)
+    
+    # Plot all bins
+    for i in range(nbins):
+        
+        m=axs[i].contourf(da['lon'], da['lat'],
+                          da.sel({dim_str:i}),levels=clevs,
+                          cmap=cmap,extend='both',norm=norm)
+        axs[i].format(coast=True,lonlim=lonreg,latlim=latreg,grid=True,
+                      lonlabels='b', latlabels='l',title=labels[i],
+                      suptitle=suptitle,abc=True)
+
+    # Colorbar
+    f.colorbar(m,loc='b',length=0.75)
+    
+    # Save to file
+    plt.savefig(figfile)
