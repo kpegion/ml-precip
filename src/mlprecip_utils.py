@@ -271,14 +271,14 @@ def plotRatios(da,index_name,suptitle,labels,clevs,cmap,figfile):
     dim_str=index_name+'_bins'
     nbins=len(da[dim_str])
     
-    norm = pplt.Norm('diverging', vcenter=1)
+    #norm = pplt.Norm('diverging', vcenter=1)
     
     # Plot all bins
     for i in range(nbins):
         
         m=axs[i].contourf(da['lon'], da['lat'],
-                          da.sel({dim_str:i}),levels=clevs,
-                          cmap=cmap,extend='both',norm=norm)
+                          da.sel({dim_str:i}),
+                          cmap=cmap,extend='both')
         axs[i].format(coast=True,lonlim=lonreg,latlim=latreg,grid=True,
                       lonlabels='b', latlabels='l',title=labels[i],
                       suptitle=suptitle,abc=True)
