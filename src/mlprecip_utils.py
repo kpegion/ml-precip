@@ -4,7 +4,10 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.linear_model import LassoCV, RidgeCV, LinearRegression
+from sklearn.linear_model import LassoCV, RidgeCV, LinearRegression, LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import Binarizer
+from sklearn.utils import class_weight
 
 import tensorflow as tf
 from tensorflow.keras import backend as k
@@ -13,20 +16,41 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras import regularizers
 from tensorflow.keras import initializers
 from tensorflow.keras import optimizers
+from tensorflow.keras.wrappers.scikit_learn import KerasClassifier, KerasRegressor
 
 import proplot as pplt
 import cartopy.feature as cfeature
 
+tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+
+
+def r2_score(y_true, y_pred):
+    from keras import backend as K
+    SS_res =  k.sum(k.square( y_true-y_pred ))
+    SS_tot = k.sum(k.square( y_true - k.mean(y_true) ) )
+    return ( 1 - SS_res/(SS_tot + k.epsilon()) )
+
+
 def init_predictors_dict():
     
-    amo_dict=dict(name='amo',ptype='index',freq='mon',readfunc='getMonthlyClimIndices')
-    naomonthly_dict=dict(name='nao',ptype='index',freq='mon',readfunc='getMonthlyClimIndices')
-    nino34_dict=dict(name='nino34',ptype='index',freq='mon',readfunc='getMonthlyClimIndices')
-    pdo_dict=dict(name='pdo',ptype='index',freq='mon',readfunc='getMonthlyClimIndices')
-    rmmamp_dict=dict(name='RMM_amp',ptype='index',freq='day',readfunc='getRMM')
-    rmmphase_dict=dict(name='RMM_phase',ptype='cat',freq='day',readfunc='getRMM')
+    amo_dict=dict(name='amo',ptype='index',freq='mon',readfunc='getMonthlyClimIndices',
+                 file='/data/ccsm4/kpegion/obs2/CLIM_INDICES/amo.txt')
+    naomonthly_dict=dict(name='nao',ptype='index',freq='mon',readfunc='getMonthlyClimIndices',
+                        file='/data/ccsm4/kpegion/obs2/CLIM_INDICES/nao.txt')
+    nino34_dict=dict(name='nino34',ptype='index',freq='mon',readfunc='getMonthlyClimIndices',
+                    file='/data/ccsm4/kpegion/obs2/CLIM_INDICES/nino34.txt')
+    pdo_dict=dict(name='pdo',ptype='index',freq='mon',readfunc='getMonthlyClimIndices',
+                 file='/data/ccsm4/kpegion/obs2/CLIM_INDICES/pdo.txt')
+    rmmamp_dict=dict(name='RMM_amp',ptype='index',freq='day',readfunc='getRMM',
+                     file='/data/ccsm4/kpegion/obs2/RMM/rmmint1979-092021.txt')
+    rmmphase_dict=dict(name='RMM_phase',ptype='cat',freq='day',readfunc='getRMM',
+                      file='/data/ccsm4/kpegion/obs2/RMM/rmmint1979-092021.txt')
+    pnaregimes_dict=dict(name='pnaregimes',ptype='cat',freq='day',readfunc='getWR',
+                         file='/scratch/kpegion/ERAI_clusters_5_1980-2015_')
+    mlso_dict=dict(name='mlso',ptype='index',freq='day',readfunc='getMLSO',
+                  file='/data/vortex/scratch/mlso.index.01011979-08312019.nc')
 
-    predictors=[amo_dict,naomonthly_dict,nino34_dict,pdo_dict,rmmamp_dict,rmmphase_dict]
+    predictors=[amo_dict,naomonthly_dict,nino34_dict,pdo_dict,rmmamp_dict,rmmphase_dict,mlso_dict,pnaregimes_dict]
     
     return predictors
     
@@ -46,11 +70,9 @@ def lasso(X,Y):
     """
 
     regr = LassoCV(cv=5,max_iter=5000).fit(X,Y)
-    Y_pred = regr.predict(X)
+    pred = regr.predict(X)
 
-    r_squared,Y_pred=get_r2(X,Y,regr)
-
-    return regr,regr.coef_,r_squared,Y_pred
+    return regr,pred
 
 def ridge(X,Y):
 
@@ -67,11 +89,9 @@ def ridge(X,Y):
     """
 
     regr = RidgeCV(cv=5).fit(X,Y)
-    Y_pred = regr.predict(X)
+    pred = regr.predict(X)
 
-    r_squared,Y_pred=get_r2(X,Y,regr)
-
-    return regr,regr.coef_,r_squared,Y_pred
+    return regr,pred
 
 def lr(X,Y):
 
@@ -88,13 +108,30 @@ def lr(X,Y):
     """
 
     regr = LinearRegression().fit(X,Y)
-    Y_pred = regr.predict(X)
+    pred = regr.predict(X)
 
-    r_squared,Y_pred=get_r2(X,Y,regr)
+    return regr,pred
 
-    return regr,regr.coef_,r_squared,Y_pred
+def logistic(X,Y):
 
-def tomsensomodel_regression(X,Y):
+    """
+    Fit regression model using standard regression model without regularization
+
+    Args:
+    X : numpy array representing the features for all nsamples of the training data  (nsamples,nfeatures)
+    Y : numpy array representing the target for all nsamples of the training data (nsamples)
+
+    Returns:
+    model, coefficients, r-squared, and the predicted values of Y
+
+    """
+
+    regr = LogisticRegression(class_weight='balanced').fit(X,Y)
+    pred = regr.predict(X)
+
+    return regr,pred
+
+def tomsensomodel_regression(in_shape):
 
     """
     Fit fully connected neural network Input(nfeatures)->8->8->Output(1)
@@ -107,45 +144,62 @@ def tomsensomodel_regression(X,Y):
     model
 
     """
-    model = Sequential()
+    
+    def regr_model():
+        model = Sequential()
 
-    model.add(Dense(8, input_dim=X.shape[1],activation='tanh',
+        model.add(Dense(8, input_dim=in_shape,activation='relu',
                 kernel_initializer='he_normal',
                 kernel_regularizer=regularizers.l1(0.02),
                 bias_initializer='he_normal'))
 
-    model.add(Dense(8, activation='tanh',
-                kernel_initializer='he_normal',
-                bias_initializer='he_normal'))
+        model.add(Dense(8, activation='tanh',
+                    kernel_initializer='he_normal',
+                    bias_initializer='he_normal'))
 
-    model.add(Dense(1,name='output'))
+        model.add(Dense(1,name='output'))
 
-    model.compile(optimizer=optimizers.Adam(lr=0.001),
-                  loss ='mean_squared_error',
-                  metrics = ['mse'])
+        model.compile(optimizer=optimizers.Adam(lr=0.001),
+                      loss ='mean_squared_error',
+                      metrics = [r2_score])
+    
+        return model
+    return regr_model
 
-    model.fit(X,Y,epochs=250, batch_size=100,verbose=0)
-
-    return(model)
-
-def get_r2(X,Y,model):
+def tomsensomodel_cat(in_shape):
 
     """
-    Calculate r-squared of a for a given model, features, and target
+    Fit fully connected neural network Input(nfeatures)->8->8->Output(1)
 
     Args:
     X : numpy array representing the features for all nsamples of the training data  (nsamples,nfeatures)
     Y : numpy array representing the target for all nsamples of the training data (nsamples)
-    model : model returned from calls to keras or scikit-learn models
 
     Returns:
-    r-squared value of predicted value of Y given X and target value of Y based on specified model
+    model
 
     """
-    pred = model.predict(X).squeeze()
-    rsq=np.corrcoef(Y,pred)[0,1]
-    return rsq,pred
+    def cat_model():
+        
+        model = Sequential()
+        model.add(Dense(8, input_dim=in_shape,activation='relu',
+                    kernel_initializer='he_normal',
+                    #kernel_regularizer=regularizers.l1(0.02),
+                    bias_initializer='he_normal'))
 
+        #model.add(Dense(8, activation='relu',
+        #            kernel_initializer='he_normal',
+        #            bias_initializer='he_normal'))
+
+        model.add(Dense(1,name='output',activation='sigmoid'))
+
+        #model.compile(optimizer=optimizers.Adam(lr=0.001),
+        model.compile(optimizer=optimizers.Adam(lr=0.001),
+                      loss='binary_crossentropy',
+                      metrics = ['accuracy'])
+    
+        return model
+    return cat_model
 
 def standardize(ds):
     """
@@ -175,7 +229,7 @@ def heatmap(X,Y,labels):
 
     """
     tmp=np.hstack((X,np.expand_dims(Y, axis=1)))
-    d = pd.DataFrame(data=tmp,columns=labels)
+    d = pd.DataFrame(data=tmp,columns=labels.append("target"))
     corr=d.corr()
 
     mask = np.zeros_like(corr, dtype=np.bool)
@@ -206,22 +260,6 @@ def makeCategories(ds,bins,index_name):
     ds_tmp=ds_tmp.to_dataset(name=index_name+'_bins')
     
     return ds_tmp
-
-def makeBins(ds,index_name,nbins):
-
-    # Create bins and assign integer to each bin
-    tmp=np.zeros((ds['time'].shape[0]))
-    tmp[ds[index_name]>=0.5]=0
-    tmp[(ds[index_name]>=-0.5) & (ds[index_name]< 0.5)] = 1
-    tmp[ds[index_name]<=-0.5]=2
-
-    # Put into xarray.Dataset
-    ds_tmp=xr.DataArray(tmp,
-                        coords={'time':ds['time'].values},
-                                dims=['time'])        
-    ds_tmp=ds_tmp.to_dataset(name=index_name+'_bins')
-    
-    return(ds_tmp)
     
 def calcComposites(ds,index_name,labels):
     
@@ -245,6 +283,7 @@ def plotComposites(ds,index_name,totals,suptitle,labels,clevs,cmap,figfile):
     
     dim_str=index_name+'_bins'
     nbins=int(np.max(ds[dim_str].values)+1)
+    print(nbins)
     
     # Define map region and center longitude
     lonreg=(269,283)
@@ -254,11 +293,11 @@ def plotComposites(ds,index_name,totals,suptitle,labels,clevs,cmap,figfile):
     # Set number of rows and columns
     if (nbins > 4):
         ncols=2
-        nrows=int(nbins/ncols)
+        nrows=int(np.ceil(nbins/ncols))
     else:
         ncols=1
         nrows=nbins
-        
+    
     f, axs = pplt.subplots(ncols=ncols, nrows=nrows,
                            proj='pcarree',proj_kw={'lon_0': lon_0},
                            width=8.5,height=11.0)
@@ -317,7 +356,7 @@ def plotRatios(da,index_name,suptitle,labels,clevs,cmap,figfile):
     # Set number of rows and columns
     if (nbins > 4):
         ncols=2
-        nrows=int(nbins/ncols)
+        nrows=int(np.ceil(nbins/ncols))
     else:
         ncols=1
         nrows=nbins
@@ -344,10 +383,9 @@ def plotRatios(da,index_name,suptitle,labels,clevs,cmap,figfile):
     # Save to file
     plt.savefig(figfile)
     
-def getMonthlyClimIndices(path,i,sdate,edate):
+def getMonthlyClimIndices(file,i,sdate,edate):
 
-    print(i)
-    df=pd.read_table(path+'/CLIM_INDICES/'+i+'.txt',skiprows=1,
+    df=pd.read_table(file,skiprows=1,
                      header=None,delim_whitespace=True,
                      index_col=0,parse_dates=True,
                      na_values=['-99.9','-99.90','-99.99']).dropna()
@@ -357,18 +395,14 @@ def getMonthlyClimIndices(path,i,sdate,edate):
     dates=pd.date_range(start=start_date,end=end_date,freq='MS') + pd.DateOffset(days=14)
     
     ds=xr.DataArray(df.T.unstack().values.astype('float'),coords={'time':dates},dims=['time']).to_dataset(name=i).dropna(dim='time')
-
-    # Linearly interpolate monthly indices to daily
-    ds=ds.resample(time='1D').interpolate("linear").sel(time=slice(sdate,edate))
     
     return ds
 
-def getRMM(path,sdate,edate):
+def getRMM(file,sdate,edate):
 
     rmm_cols=['year','month','day','rmm1','rmm2','phase','amp','source'] 
-    file='rmmint1979-092021.txt'
 
-    df=pd.read_table(path+'/RMM/'+file,skiprows=2,
+    df=pd.read_table(file,skiprows=2,
                      header=None,delim_whitespace=True,
                      names=rmm_cols,parse_dates= {"date" : ["year","month","day"]},
                      na_values=['999','1e36']).dropna().drop(['source'],axis=1)
@@ -378,25 +412,25 @@ def getRMM(path,sdate,edate):
    
     return ds_phase,ds_amp
 
-def testModels(ds_i):
+def testModelsCat(ds_features,ds_target):
     
     # ML Model for this season
     
     # Setup Features (X) and Target (Y)
     # Features: AMO, NAO, Nino34, PDO; Target: SEUS Precip Index
     
-    X=np.stack((ds_i['amo'].values,ds_i['nao'].values,ds_i['nino34'],ds_i['pdo']),axis=-1)
-    Y=ds_i['precip'].values
+    X=ds_features.to_stacked_array('features',sample_dims=['time'])
+    Y=ds_target['precip'].values
 
-    print('Check Features and Target Dimensions')
-    print('Features (X): ',X.shape)
-    print('Target (Y): ',Y.shape)
+    #print('Check Features and Target Dimensions')
+    #print('Features (X): ',X.shape)
+    #print('Target (Y): ',Y.shape)
 
     nsamples=X.shape[0]
     nfeatures=X.shape[1]
 
-    print("Samples: ",nsamples)
-    print("Features: ", nfeatures)
+    #print("Samples: ",nsamples)
+    #print("Features: ", nfeatures)
     
     # Create Train and Test Sets
     X_train, X_test, Y_train, Y_test = train_test_split(X,Y,train_size=0.8,shuffle=False)
@@ -404,57 +438,129 @@ def testModels(ds_i):
     ntrain=X_train.shape[0]
     ntest=X_test.shape[0]
 
-    print('Training Size: ',ntrain)
-    print('Testing Size: ',ntest)
+    #print('Training Size: ',ntrain)
+    #print('Testing Size: ',ntest)
+        
+    regr_log,Ypred_log=logistic(X_train,Y_train)
+    print('Logistic Training set accuracy score: ' + str(regr_log.score(X_train,Y_train)))
+    print('Logistic Test set accuracy score: ' + str(regr_log.score(X_test,Y_test)))
     
-    # Take a look at the Training Data
+    nn = KerasClassifier(build_fn=tomsensomodel_cat(X_train.shape[1]),epochs=250, batch_size=100,verbose=0)
     
+    # Apply class weighting for imbalanced classes
+    weights = class_weight.compute_class_weight('balanced',np.unique(Y_train),Y_train)
+    
+    # Fit model
+    history=nn.fit(X, Y,class_weight=weights,validation_split=0.2)
+    
+    # Predict on training
+    Ypred_nn=nn.predict(X_train)
+    
+    print('NN Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
+    print('NN Test set accuracy score: ' + str(nn.score(X_test, Y_test)))
+    
+    # Plot learning Curve for NN
     plt.figure(figsize=(11,8.5))
-    y=np.arange(ntrain)
-
-    for i,f in enumerate(indices):
-
-        plt.subplot(2,2,i+1)
-
-        z = np.polyfit(y,X_train[:,i],1)
-        p = np.poly1d(z)
+    plotLearningCurve(history)
     
-        plt.plot(y,X_train[:,i])
-        plt.plot(p(y),"r--")
-        plt.title(f)
-
-        print("Check Stats: ", "Index: ",f, "Mean: ", X_train[:,i].mean(axis=0),"Var: ", X_train[:,i].var(axis=0))
-    plt.tight_layout()  
-    
-    # Make a heatmap
-    heatmap(X_train,Y_train,list(ds_i.keys()))
-    
-    # Train the Models
-    regr_lr,coeffs_lr,rsq_train_lr,Ypred_lr=lr(X_train,Y_train)
-    print('R^2 Train Standard : ', rsq_train_lr)
-    regr_lasso,coeffs_lasso,rsq_train_lasso,Ypred_lasso=lasso(X_train,Y_train)
-    print('R^2 Train LASSO : ', rsq_train_lasso)
-    regr_ridge,coeffs_ridge,rsq_train_ridge,Ypred_ridge=ridge(X_train,Y_train)
-    print('R^2 Train Ridge : ', rsq_train_ridge)
-    nn=tomsensomodel_regression(X_train,Y_train)
-    rsq_train_nn,Y_pred_train_nn=get_r2(X_train,Y_train,nn)
-    print('R^2 Train NN: ',rsq_train_nn)
-    
-    # Predict for Test
-    rsq_test_lr,Y_pred_test_lr=get_r2(X_test,Y_test,regr_lr)
-    print('R^2 Test Standard: ',rsq_test_lr)
-    rsq_test_lasso,Y_pred_test_lasso=get_r2(X_test,Y_test,regr_lasso)
-    print('R^2 Test Lasso: ',rsq_test_lasso)
-    rsq_test_ridge,Y_pred_test_ridge=get_r2(X_test,Y_test,regr_ridge)
-    print('R^2 Test Ridge: ',rsq_test_lr)
-    rsq_test_nn,Y_pred_test_nn=get_r2(X_test,Y_test,nn)
-    print('R^2 Test NN: ',rsq_test_nn)
-    
-    # Plot Coefficients for Standard Linear Regression
+    # Plot training and target
     plt.figure(figsize=(11,8.5))
-    plt.bar(indices,coeffs_lr)
+    plt.step(np.arange(ntrain),Y_train)
+    plt.step(np.arange(ntrain),Ypred_log)
+    plt.step(np.arange(ntrain),Ypred_nn)
+    plt.legend(['Target','Logistic','NN'])
+    
+    # Plot Coefficients for Logistic Regression
+    plt.figure(figsize=(11,8.5))
+    plt.bar(list(ds_features.keys()),regr_log.coef_[0])
 
     return
 
+def testModelsRegr(ds_features,ds_target):
+    
+    # ML Model for this season
+    
+    # Setup Features (X) and Target (Y)
+    # Features: AMO, NAO, Nino34, PDO; Target: SEUS Precip Index
+    
+    X=ds_features.to_stacked_array('features',sample_dims=['time'])
+    Y=ds_target['precip'].values
+
+    #print('Check Features and Target Dimensions')
+    #print('Features (X): ',X.shape)
+    #print('Target (Y): ',Y.shape)
+
+    nsamples=X.shape[0]
+    nfeatures=X.shape[1]
+
+    #print("Samples: ",nsamples)
+    #print("Features: ", nfeatures)
+    
+    # Create Train and Test Sets
+    X_train, X_test, Y_train, Y_test = train_test_split(X,Y,train_size=0.8,shuffle=False)
+
+    ntrain=X_train.shape[0]
+    ntest=X_test.shape[0]
+
+    #print('Training Size: ',ntrain)
+    #print('Testing Size: ',ntest)
+    
+    # Make a heatmap
+    heatmap(X_train,Y_train,list(ds_features.keys()))
+    
+    # Train the Models
+    regr_lr,Ypred_lr=lr(X_train,Y_train)
+    print('Regression Training set R^2 score: ' + str(regr_lr.score(X_train,Y_train)))
+    print('Regression Test set R^2 score: ' + str(regr_lr.score(X_test,Y_test)))
+
+    regr_lasso,Ypred_lasso=lasso(X_train,Y_train)
+    print('LASSO Training set R^2 score: ' + str(regr_lasso.score(X_train,Y_train)))
+    print('LASSO Test set R^2 score: ' + str(regr_lasso.score(X_test,Y_test)))
+
+    regr_ridge,Ypred_ridge=ridge(X_train,Y_train)
+    print('Ridge Training set R^2 score: ' + str(regr_ridge.score(X_train,Y_train)))
+    print('Ridge Test set R^2 score: ' + str(regr_ridge.score(X_test,Y_test)))
+
+    nn = KerasRegressor(build_fn=tomsensomodel_regression(X_train.shape[1]),epochs=250, batch_size=100,verbose=0)
+    history=nn.fit(X, Y, validation_split=0.2)
+    Ypred_nn=nn.predict(X_train)
+    print('NN Training set R^2 score: ' + str(nn.score(X_train, Y_train)))
+    print('NN Test set R^2 score: ' + str(nn.score(X_test, Y_test)))
+    
+    plt.figure(figsize=(11,8.5))
+    plt.plot(Y_train)
+    plt.plot(Ypred_lr)
+    plt.plot(Ypred_ridge)
+    plt.plot(Ypred_lasso)
+    plt.plot(Ypred_nn)
+    plt.legend(['Target','Standard','Ridge','LASSO','NN'])
+    
+    # Plot Coefficients for Standard Linear Regression
+    plt.figure(figsize=(11,8.5))
+    plt.bar(list(ds_features.keys()),regr_lr.coef_)
+
+    return
+
+
+def getWR(file,seas,sdate,edate):
+    fname=file+seas+'.nc'
+    ds=xr.open_dataset(fname).rename({'clusters':'pnaregimes'}).sel(time=slice(sdate,edate))
+    ds['pnaregimes_bins']=np.arange(5)
+    return ds
+
+def getMLSO(file,sdate,edate):
+    ds=xr.open_dataset(file).sel(time=slice(sdate,edate))
+    return ds
+
+
+def plotLearningCurve(history):
+    # summarize history for loss
+    plt.plot(history.history['loss'])
+    plt.plot(history.history['val_loss'])
+    plt.title('model loss')
+    plt.ylabel('loss')
+    plt.xlabel('epoch')
+    plt.legend(['train', 'test'], loc='upper left')
+    return
 
 
