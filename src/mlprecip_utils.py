@@ -10,16 +10,19 @@ from sklearn.preprocessing import Binarizer
 from sklearn.utils import class_weight
 
 import tensorflow as tf
-from tensorflow.keras import backend as k
-from tensorflow.keras.layers import Input, Dense, Activation
-from tensorflow.keras.models import Sequential
-from tensorflow.keras import regularizers
-from tensorflow.keras import initializers
-from tensorflow.keras import optimizers
-from tensorflow.keras.wrappers.scikit_learn import KerasClassifier, KerasRegressor
+from keras import backend as k
+from keras.layers import Input, Dense, Activation
+from keras.models import Sequential
+from keras import regularizers
+from keras import initializers
+from keras import optimizers
+from keras.wrappers.scikit_learn import KerasClassifier, KerasRegressor
 
 import proplot as pplt
 import cartopy.feature as cfeature
+
+import innvestigate
+import innvestigate.utils
 
 # Turn off deprecation warnings
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
@@ -194,8 +197,8 @@ def tomsensomodel_cat(in_shape):
         model.add(Dense(8, activation='relu',
                     kernel_initializer='he_normal',
                     bias_initializer='he_normal'))
-
-        model.add(Dense(1,name='output',activation='sigmoid'))
+        
+        model.add(Dense(1,activation='sigmoid'))
 
         model.compile(optimizer=optimizers.Adam(),
                       loss='binary_crossentropy',
@@ -204,19 +207,6 @@ def tomsensomodel_cat(in_shape):
         return model
     return cat_model
 
-#def standardize(ds):
-#    """
-#    Standardize the dataset as (X-mu)/sigma
-#
-#    Args:
-#    ds : xarray.Dataset with dimensions time, ..., ...
-#
-#    Returns:
-#    Standardized xarray.Dataset
-#
-#    """
-#    ds_scaled=(ds-ds.mean(dim='time'))/ds.std(dim='time')
-#    return ds_scaled
 
 def heatmap(X,Y,labels):
 
@@ -418,11 +408,12 @@ def testModelsCat(ds_features,ds_target):
     print('Logistic Test set accuracy score: ' + str(regr_log.score(X_test,Y_test)))
     
     # -- Neural Network -- #
-    nn = KerasClassifier(build_fn=tomsensomodel_cat(X_train.shape[1]),epochs=250, batch_size=100,verbose=0)
     weights = class_weight.compute_class_weight('balanced',np.unique(Y_train),Y_train)
-    history=nn.fit(X, Y,class_weight=weights,validation_split=0.2)
+    nn = KerasClassifier(build_fn=tomsensomodel_cat(X_train.shape[1]),epochs=100, batch_size=25,verbose=0,class_weight=weights)
+    history=nn.fit(X, Y,validation_split=0.2,shuffle=False)
     Ypred_nn=nn.predict(X_train)
     
+    print("CHECK NN: ",np.count_nonzero(Ypred_nn==0),np.count_nonzero(Ypred_nn==1))
     print('NN Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
     print('NN Test set accuracy score: ' + str(nn.score(X_test, Y_test)))
     
@@ -440,7 +431,22 @@ def testModelsCat(ds_features,ds_target):
     # Plot Coefficients for Logistic Regression
     plt.figure(figsize=(11,8.5))
     plt.bar(list(ds_features.keys()),regr_log.coef_[0])
+    
+    # Calculate LRP 
+    a=calcLRP(nn.model,X_train)
+    ds_tmp=xr.DataArray(a,
+                    coords={'time':ds_features['time'][0:a.shape[0]],
+                            'features':list(ds_features.keys())},
+                    dims=['time','features'])        
+    ds_lrp=ds_tmp.to_dataset(name='lrp')
 
+    # Normalize by max value in grid
+    ds_lrp=ds_lrp/ds_lrp.max(dim=['features'])
+    
+    # Plot LRP composite in time      
+    plt.figure(figsize=(11,8.5))
+    plt.bar(ds_lrp['features'],ds_lrp['lrp'].mean(dim='time'))  
+    
     return
 
 def testModelsRegr(ds_features,ds_target):
@@ -491,11 +497,11 @@ def testModelsRegr(ds_features,ds_target):
 
     # -- Neural Network
     nn = KerasRegressor(build_fn=tomsensomodel_regression(X_train.shape[1]),epochs=250, batch_size=100,verbose=0)
-    history=nn.fit(X, Y, validation_split=0.2)
+    history=nn.fit(X_train, Y_train)
     Ypred_nn=nn.predict(X_train)
     print('NN Training set R^2 score: ' + str(nn.score(X_train, Y_train)))
     print('NN Test set R^2 score: ' + str(nn.score(X_test, Y_test)))
-    
+
     # Plot target and fit 
     plt.figure(figsize=(11,8.5))
     plt.plot(Y_train)
@@ -507,7 +513,7 @@ def testModelsRegr(ds_features,ds_target):
     
     # Plot Coefficients for Standard Linear Regression
     plt.figure(figsize=(11,8.5))
-    plt.bar(list(ds_features.keys()),regr_lr.coef_)
+    plt.bar(list(ds_features.keys()),regr_lr.coef_)              
 
     return
 
@@ -552,18 +558,14 @@ def getMLSO(file,sdate,edate):
 
 def getNASH(file,sdate,edate):
     
-    print('DATES: ',sdate,edate)
     ds=xr.open_dataset(file)
-    print(ds)
-    #ds=ds.sel(time=slice(sdate,edate))
-    
+
     ds_amp=ds['amp'].to_dataset(name='nash_amp')
     
     ds_phase=ds['phase'].to_dataset(name='nash_phase')
     ds_phase['nash_phase_bins']=np.arange(4)
     
     return ds_phase,ds_amp
-
 
 def plotLearningCurve(history):
     # summarize history for loss
@@ -576,3 +578,15 @@ def plotLearningCurve(history):
     return
 
 
+def calcLRP(model,X):
+    
+    # Strip softmax layer
+    #model = innvestigate.utils.model_wo_softmax(model)
+
+    # Create analyzer
+    analyzer = innvestigate.create_analyzer("deep_taylor", model)
+
+    # Apply analyzer w.r.t. maximum activated output-neuron
+    a = analyzer.analyze(X)
+    
+    return a

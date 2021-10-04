@@ -73,17 +73,18 @@ Each day is categorized into one of 4 phases of the NASH western ridge and NASH 
 ### Methods
 
 1. Composites
+
 2. Counts of # of Days in Season above/below normal
 
 3. *Regression Problem*
 Standard Linear Regression
 Linear Regression with LASSO regularization
-Linear Regression wiht Ridge Regularization
-Shallow Neural Network
+Linear Regression with Ridge Regularization
+Shallow Neural Network Input(10)->8->8->Output(1)
 
 4. *Classification Problem*
 Logisitic Regression
-Shallow Neural Network
+Shallow Neural Network Input(10)->8->8->Output(1)
 
 ### Results
 
