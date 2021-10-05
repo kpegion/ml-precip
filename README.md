@@ -34,16 +34,16 @@ Years: 1997-2015 (This is what I had available and consistent across all indices
 
 Seasons: Jun-Jul-Aug
 
-1. Global Precipitatin Climatology Project (GPCP) Daily Precipitation V1.3, 1x1 deg 
+1. Global Precipitation Climatology Project (GPCP) Daily Precipitation V1.3, 1x1 deg 
 Dates Available: 1996-Present
 Downloaded from: https://www.ncei.noaa.gov/data/global-precipitation-climatology-project-gpcp-daily/access/gpcp_v01r03_daily*
 
 2. Monthly Climate Indices 
 
-* Atlantic Multidecadal Oscillation (AMO)
+* Atlantic Multidecadal Oscillation (AMO) 1948-Present
 * North Atlantic Oscillation (NAO) 1948-Present
 * Pacific Decadal Oscillation (PDO) 1948 Present
-* Nino34 1948-Present 1948-Present
+* Nino34 1948-Present 
 
 Downloaded from NOAA/ESRL/PSD https://psl.noaa.gov/data/climateindices/list/
 
