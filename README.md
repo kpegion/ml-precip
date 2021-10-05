@@ -30,12 +30,13 @@ Data Prep Codes:
 
 ### Data 
 
-Years: 1997-2015 (This is what I had available and consistent across all indices I was working with -- should be expanded for as long as possible)
+Years: 1997-2015
+This is what I had available and consistent across all indices I was working with. Should be expanded for as long as possible. Precipitation data is the limiting factor with GPCP starting in 1996.
 
 Seasons: Jun-Jul-Aug
 
 1. Global Precipitation Climatology Project (GPCP) Daily Precipitation V1.3, 1x1 deg 
-Dates Available: 1996-Present
+Dates Available: 1996-Present *Limiting factor for analysis-- what can we use for a longer precip dataset?*
 Downloaded from: https://www.ncei.noaa.gov/data/global-precipitation-climatology-project-gpcp-daily/access/gpcp_v01r03_daily*
 
 2. Monthly Climate Indices 
