@@ -18,9 +18,10 @@ python -m ipykernel install --user --name ml-precip --display-name "Python (ml-p
 All codes are located in `src/`
 
 Main codes:
-* `daily_precip_indices.ipynb` - Notebook for producing composites, above/below normal counts, and ML models with *daily* precip indices
-* `monthly_precip_indices.ipynb` - Notebook for producing composites, above/below normal counts, and ML models with *monthly* precip indices
+* `daily_precip_indices.ipynb` - Notebook for producing composites, above/below normal counts, and ML models with *daily* indices
+* `monthly_precip_indices.ipynb` - Notebook for producing composites, above/below normal counts, and ML models with *monthly* indices
 * `test_dist.ipynb` - Notebook to calculate and plot histograms of consecutive days with above threshold and below threshold precipitation anomalies; plots fitted distributions to these histograms. 
+* `daily_precip_fields.ipynb` - Notebook for producing ML models with *daily* fields.  In development; NN is not tuned. 
 
 Data Prep Codes:
 * `getDataNASH.ipynb` -- Extracts relevant variables for NASH from ERAI. Takes a long time to run, but only has to run once.

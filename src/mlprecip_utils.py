@@ -11,8 +11,9 @@ from sklearn.utils import class_weight
 
 import tensorflow as tf
 from keras import backend as k
-from keras.layers import Input, Dense, Activation
-from keras.models import Sequential
+from keras.layers import Input, Dense, Activation, ZeroPadding2D, BatchNormalization, Flatten, Conv2D
+from keras.layers import MaxPooling2D, Dropout
+from keras.models import Sequential,Model
 from keras import regularizers
 from keras import initializers
 from keras import optimizers
@@ -60,7 +61,11 @@ def init_predictors_dict():
     predictors=[amo_dict,naomonthly_dict,nino34_dict,pdo_dict,rmmamp_dict,rmmphase_dict,mlso_dict,pnaregimes_dict,nashphase_dict,nashamp_dict]
     
     return predictors
+
+def init_fields_dict():
     
+    pna_z500_dict=dict(name='pnaz500',freq='day',readfunc='getfield',
+                       file='/scratch/kpegion/ERAI_clusters_5_1980-2015_')
 
 def lasso(X,Y):
 
@@ -207,6 +212,72 @@ def tomsensomodel_cat(in_shape):
         return model
     return cat_model
 
+def cnn_cat(input_shape):
+
+    """
+    Implementation of the Ham et al. CNN ENSO Model prior to transfer learning.
+    This function was adapted from the happyModel example 
+    taken from a deeplearning.ai course taught by Andrew Ng on Coursera. 
+    It was adapted to match the CNN model of ENSO used in Ham et al. 
+    
+    Arguments:
+    input_shape -- shape of the images of the dataset
+        (height, width, channels) as a tuple.  
+        Note that this does not include the 'batch' as a dimension.
+        If you have a batch like 'X_train', 
+        then you can provide the input_shape using
+        X_train.shape[1:]
+    Returns:
+    model -- a Model() instance in Keras
+    """
+    def cnn_model():
+        
+        # Define the input placeholder as a tensor with shape input_shape. 
+        X_input = Input(input_shape)
+
+        # Layer 1: CONV1->TANH->MAXPOOL
+        X = Conv2D(filters=2, kernel_size=(4,2), 
+                   strides = (1, 1), 
+                   padding='same', 
+                   name = 'conv1')(X_input)
+        X = Activation('relu')(X)
+        X = MaxPooling2D((2, 2),strides=(2,2),
+                         name='max_pool1',padding='valid')(X)
+    
+        # Layer 2: CONV2->TANH->MAXPOOL
+        #X = Conv2D(filters=50, kernel_size=(4,2), 
+        #           strides = (1, 1), 
+        #           padding='same',
+        #           name = 'conv2')(X)
+        #X = Activation('relu')(X)
+        #X = MaxPooling2D((2, 2),strides=(2,2),
+        #                 padding='valid',name='max_pool2')(X)
+    
+        # Layer 3: CONV3->TANH (then FLATTEN)
+        #X = Conv2D(filters=50, kernel_size=(4,2), 
+        #           strides = (1, 1), 
+        #           padding='same', 
+        #           name = 'conv3')(X)
+        X = Activation('relu')(X)
+        X = Flatten()(X)
+    
+        # Layer 4: FC1->TANH
+        X = Dense(8, activation='relu', name='fc1')(X)
+
+        # Output Layer
+        #X = Dense(1,name='output')(X)
+        X = Dense(1, activation='sigmoid',name='output')(X)
+    
+        # Create model
+        model = Model(inputs = X_input, outputs = X, name='cnn')
+
+        # Compile Model
+        model.compile(optimizer=optimizers.Adam(),
+                      loss='binary_crossentropy',
+                      metrics = ['accuracy'])
+        return model
+    
+    return cnn_model
 
 def heatmap(X,Y,labels):
 
@@ -374,22 +445,22 @@ def plotRatios(da,index_name,suptitle,labels,clevs,cmap,figfile):
     plt.savefig(figfile)
     
 
-def testModelsCat(ds_features,ds_target):
+def testModelsCat(ds_features,ds_target,fname):
     
     # Setup Features (X) and Target (Y)
     
     X=ds_features.to_stacked_array('features',sample_dims=['time'])
     Y=ds_target['precip'].values
 
-    #print('Check Features and Target Dimensions')
-    #print('Features (X): ',X.shape)
-    #print('Target (Y): ',Y.shape)
+    print('Check Features and Target Dimensions')
+    print('Features (X): ',X.shape)
+    print('Target (Y): ',Y.shape)
 
     nsamples=X.shape[0]
     nfeatures=X.shape[1]
 
-    #print("Samples: ",nsamples)
-    #print("Features: ", nfeatures)
+    print("Samples: ",nsamples)
+    print("Features: ", nfeatures)
     
     # Create Train and Test Sets
     X_train, X_test, Y_train, Y_test = train_test_split(X,Y,train_size=0.8,shuffle=False)
@@ -397,8 +468,8 @@ def testModelsCat(ds_features,ds_target):
     ntrain=X_train.shape[0]
     ntest=X_test.shape[0]
 
-    #print('Training Size: ',ntrain)
-    #print('Testing Size: ',ntest)
+    print('Training Size: ',ntrain)
+    print('Testing Size: ',ntest)
     
     # Train the Models
         
@@ -430,7 +501,12 @@ def testModelsCat(ds_features,ds_target):
     
     # Plot Coefficients for Logistic Regression
     plt.figure(figsize=(11,8.5))
-    plt.bar(list(ds_features.keys()),regr_log.coef_[0])
+    plt.bar(list(ds_features.keys()),regr_log.coef_[0],edgecolor='k',facecolor='b')
+    plt.title('Logistic Regression')
+    plt.xlabel('Predictor')
+    plt.ylabel('Regression Coefficient')
+    plt.xticks(np.arange(nfeatures),list(ds_features.keys()),rotation=45)
+    plt.savefig('../figs/'+fname+'.logistic_coeffs.png')
     
     # Calculate LRP 
     a=calcLRP(nn.model,X_train)
@@ -445,7 +521,12 @@ def testModelsCat(ds_features,ds_target):
     
     # Plot LRP composite in time      
     plt.figure(figsize=(11,8.5))
-    plt.bar(ds_lrp['features'],ds_lrp['lrp'].mean(dim='time'))  
+    plt.bar(ds_lrp['features'],ds_lrp['lrp'].mean(dim='time'),edgecolor='k',facecolor='b')  
+    plt.title('Shallow Neural Network')
+    plt.ylabel('Normalized Relevance (unitless)')
+    plt.xlabel('Predictor')
+    plt.xticks(np.arange(nfeatures),list(ds_features.keys()),rotation=45)
+    plt.savefig('../figs/'+fname+'.nnlrp.png')
     
     return
 
@@ -590,3 +671,124 @@ def calcLRP(model,X):
     a = analyzer.analyze(X)
     
     return a
+
+def testModelsCatField(ds_features,ds_target):
+
+    
+    nx=len(ds_features['lon'])
+    ny=len(ds_features['lat'])
+    nvar=2
+    # Setup Features (X) and Target (Y)
+    
+    X=xr.combine_nested([ds_features['z500'],ds_features['u250']],concat_dim='var')
+    X=X.transpose('time','lat','lon','var')
+    Y=ds_target['precip'].values
+
+    print('Check Features and Target Dimensions')
+    print('Features (X): ',X.shape)
+    print('Target (Y): ',Y.shape)
+
+    nsamples=X.shape[0]
+    nfeatures=X.shape[1]
+
+    print("Samples: ",nsamples)
+    print("Features: ", nfeatures)
+    
+    # Create Train and Test Sets
+    X_train, X_test, Y_train, Y_test = train_test_split(X,Y,train_size=0.8,shuffle=False)
+
+    ntrain=X_train.shape[0]
+    ntest=X_test.shape[0]
+
+    print('Training Size: ',ntrain)
+    print('Testing Size: ',ntest)
+    
+    # Train the Models
+        
+    # -- Logistic Regression -- #
+    #regr_log,Ypred_log=logistic(X_train,Y_train)
+    #print('Logistic Training set accuracy score: ' + str(regr_log.score(X_train,Y_train)))
+    #print('Logistic Test set accuracy score: ' + str(regr_log.score(X_test,Y_test)))
+    
+    # -- Neural Network -- #
+    weights = class_weight.compute_class_weight('balanced',np.unique(Y_train),Y_train)
+    nn = KerasClassifier(build_fn=cnn_cat(X_train.shape[1:]),epochs=100, batch_size=25,verbose=0,class_weight=weights)
+    history=nn.fit(X, Y,validation_split=0.2,shuffle=False)
+    Ypred_nn=nn.predict(X_train)
+    
+    print("CHECK NN: ",np.count_nonzero(Ypred_nn==0),np.count_nonzero(Ypred_nn==1))
+    print('NN Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
+    print('NN Test set accuracy score: ' + str(nn.score(X_test, Y_test)))
+    
+    # Plot learning Curve for NN
+    plt.figure(figsize=(11,8.5))
+    plotLearningCurve(history)
+    
+    # Plot training and target
+    plt.figure(figsize=(11,8.5))
+    plt.step(np.arange(ntrain),Y_train)
+    #plt.step(np.arange(ntrain),Ypred_log)
+    plt.step(np.arange(ntrain),Ypred_nn)
+    plt.legend(['Target','NN'])
+    
+    # Plot Coefficients for Logistic Regression
+    #plt.figure(figsize=(11,8.5))
+    #coeffs_2d=regr_log.coef_[0].reshape(ny,nx)
+    #plt.contourf(ds_features['lon'],ds_features['lat'],coeffs_2d)
+    #plt.colorbar()
+    
+    # Calculate LRP 
+    a=calcLRP(nn.model,X_train)
+    ds_tmp=xr.DataArray(a.reshape(ntrain,ny,nx,nvar),
+                    coords={'time':ds_features['time'][0:ntrain],
+                            'lat':ds_features['lat'],
+                            'lon':ds_features['lon'],
+                            'var':['z500','u250']},
+                    dims=['time','lat','lon','var'])        
+    ds_lrp=ds_tmp.to_dataset(name='lrp')
+    
+    # Normalize by max value in grid
+    ds_lrp=ds_lrp/ds_lrp.max(dim=['lat','lon'])
+    
+    # Plot LRP composite in time    
+    plotLRP(ds_lrp)
+    
+    return
+
+
+def plotLRP(ds):
+
+    # Define map region and center longitude
+    lonreg=(ds['lon'].values.min(),ds['lon'].values.max())
+    latreg=(ds['lat'].values.min(),ds['lat'].values.max())
+    lon_0=290
+    
+    print(lonreg,latreg,lon_0)
+    
+    # Plotting
+    cmap='Blues'
+    clevs=np.arange(0.0,0.5,.01)
+    
+    # Variables
+    vnames=ds['var'].values
+    nvars=len(vnames)
+    
+    f, axs = pplt.subplots(ncols=1, nrows=nvars,
+                           proj='pcarree',proj_kw={'lon_0': lon_0},
+                           width=8.5,height=11.0)
+    
+    for i,v in enumerate(vnames):
+
+        ds_tmp=ds['lrp'].sel(var=v).mean(dim='time')
+        
+        m=axs[i].contourf(ds['lon'], ds['lat'],
+                          ds_tmp,levels=clevs,
+                          cmap=cmap,extend='both')
+        axs[i].format(coast=True,lonlim=lonreg,latlim=latreg,grid=True,
+                      lonlabels='b', latlabels='l',title=v,
+                      suptitle='LRP Relevance',abc=True)
+        # Add US state borders    
+        axs[i].add_feature(cfeature.STATES,edgecolor='gray')
+
+    # Colorbar
+    f.colorbar(m,loc='b',length=0.75)
