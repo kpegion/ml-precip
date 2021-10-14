@@ -8,6 +8,8 @@ from sklearn.linear_model import LassoCV, RidgeCV, LinearRegression, LogisticReg
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import Binarizer
 from sklearn.utils import class_weight
+from sklearn.cluster import KMeans
+from sklearn.metrics import ConfusionMatrixDisplay
 
 import tensorflow as tf
 from keras import backend as k
@@ -17,6 +19,7 @@ from keras.models import Sequential,Model
 from keras import regularizers
 from keras import initializers
 from keras import optimizers
+from keras.callbacks import EarlyStopping
 from keras.wrappers.scikit_learn import KerasClassifier, KerasRegressor
 
 import proplot as pplt
@@ -239,40 +242,28 @@ def cnn_cat(input_shape):
         X = Conv2D(filters=2, kernel_size=(4,2), 
                    strides = (1, 1), 
                    padding='same', 
-                   name = 'conv1')(X_input)
+                   name = 'conv1',kernel_regularizer=regularizers.l1(25))(X_input)
         X = Activation('relu')(X)
         X = MaxPooling2D((2, 2),strides=(2,2),
                          name='max_pool1',padding='valid')(X)
-    
-        # Layer 2: CONV2->TANH->MAXPOOL
-        #X = Conv2D(filters=50, kernel_size=(4,2), 
-        #           strides = (1, 1), 
-        #           padding='same',
-        #           name = 'conv2')(X)
-        #X = Activation('relu')(X)
-        #X = MaxPooling2D((2, 2),strides=(2,2),
-        #                 padding='valid',name='max_pool2')(X)
-    
-        # Layer 3: CONV3->TANH (then FLATTEN)
-        #X = Conv2D(filters=50, kernel_size=(4,2), 
-        #           strides = (1, 1), 
-        #           padding='same', 
-        #           name = 'conv3')(X)
+        X = Dropout(0.2)(X)
         X = Activation('relu')(X)
         X = Flatten()(X)
     
         # Layer 4: FC1->TANH
-        X = Dense(8, activation='relu', name='fc1')(X)
+        X = Dense(8, activation='relu', name='fc1',kernel_regularizer=regularizers.l2(0.02))(X)
+        
+        # Layer 4: FC1->TANH
+        X = Dense(4, activation='relu', name='fc2')(X)
 
         # Output Layer
-        #X = Dense(1,name='output')(X)
         X = Dense(1, activation='sigmoid',name='output')(X)
     
         # Create model
         model = Model(inputs = X_input, outputs = X, name='cnn')
 
         # Compile Model
-        model.compile(optimizer=optimizers.Adam(),
+        model.compile(optimizer=optimizers.Adam(lr=0.0005),
                       loss='binary_crossentropy',
                       metrics = ['accuracy'])
         return model
@@ -482,6 +473,8 @@ def testModelsCat(ds_features,ds_target,fname):
     weights = class_weight.compute_class_weight('balanced',np.unique(Y_train),Y_train)
     nn = KerasClassifier(build_fn=tomsensomodel_cat(X_train.shape[1]),epochs=100, batch_size=25,verbose=0,class_weight=weights)
     history=nn.fit(X, Y,validation_split=0.2,shuffle=False)
+    
+    ConfusionMatrixDisplay.from_estimator(nn, X_train, Y_train)
     Ypred_nn=nn.predict(X_train)
     
     print("CHECK NN: ",np.count_nonzero(Ypred_nn==0),np.count_nonzero(Ypred_nn==1))
@@ -672,8 +665,7 @@ def calcLRP(model,X):
     
     return a
 
-def testModelsCatField(ds_features,ds_target):
-
+def testModelsCatField(ds_features,ds_target,nmodels):
     
     nx=len(ds_features['lon'])
     ny=len(ds_features['lat'])
@@ -689,7 +681,7 @@ def testModelsCatField(ds_features,ds_target):
     print('Target (Y): ',Y.shape)
 
     nsamples=X.shape[0]
-    nfeatures=X.shape[1]
+    nfeatures=X.shape[1:]
 
     print("Samples: ",nsamples)
     print("Features: ", nfeatures)
@@ -704,70 +696,99 @@ def testModelsCatField(ds_features,ds_target):
     print('Testing Size: ',ntest)
     
     # Train the Models
+    acc_list=[]
+    valacc_list=[]
+    pred_list=[]
+    probs_list=[]
+    lrp_list=[]
+    verif_list=[]
+    
+
+    
+    for i in range(nmodels):
         
-    # -- Logistic Regression -- #
-    #regr_log,Ypred_log=logistic(X_train,Y_train)
-    #print('Logistic Training set accuracy score: ' + str(regr_log.score(X_train,Y_train)))
-    #print('Logistic Test set accuracy score: ' + str(regr_log.score(X_test,Y_test)))
+        # -- Neural Network -- #
+        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=5)
+        weights = class_weight.compute_class_weight('balanced',np.unique(Y_train),Y_train)
+        nn = KerasClassifier(build_fn=cnn_cat(X_train.shape[1:]),epochs=50, batch_size=256,verbose=0,class_weight=weights)
+        history=nn.fit(X, Y,validation_split=0.2,shuffle=False,callbacks=[es])
+        Ypred_nn=nn.predict(X_train)
+        Yprobs_nn=nn.predict_proba(X_train)
+        
+        
+        # Save model, history, and predictions
+        pred_list.append(Ypred_nn)
+        probs_list.append(Yprobs_nn)
+        verif_list.append(Y_train)
+        nn.model.save('../data/cnn/upper_tercile_seus.'+str(i)+'.h5')
+
+        # Print checks for this model
+        print("CHECK NN: ","In Category ", np.count_nonzero(Ypred_nn==0)," Not in category: ",np.count_nonzero(Ypred_nn==1))
+        print('NN Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
+        print('NN Test set accuracy score: ' + str(nn.score(X_test, Y_test)))
+        
+        acc_list.append(nn.score(X_train, Y_train))
+        valacc_list.append(nn.score(X_test, Y_test))
     
-    # -- Neural Network -- #
-    weights = class_weight.compute_class_weight('balanced',np.unique(Y_train),Y_train)
-    nn = KerasClassifier(build_fn=cnn_cat(X_train.shape[1:]),epochs=100, batch_size=25,verbose=0,class_weight=weights)
-    history=nn.fit(X, Y,validation_split=0.2,shuffle=False)
-    Ypred_nn=nn.predict(X_train)
+        # Calculate LRP 
+        a=calcLRP(nn.model,X_train)
+        ds_tmp=xr.DataArray(a.reshape(ntrain,ny,nx,nvar),
+                        coords={'time':ds_features['time'][0:ntrain],
+                                'lat':ds_features['lat'],
+                                'lon':ds_features['lon'],
+                                'var':['z500','u250']},
+                        dims=['time','lat','lon','var'])        
+        ds_tmp=ds_tmp.to_dataset(name='lrp')
     
-    print("CHECK NN: ",np.count_nonzero(Ypred_nn==0),np.count_nonzero(Ypred_nn==1))
-    print('NN Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
-    print('NN Test set accuracy score: ' + str(nn.score(X_test, Y_test)))
+        # Normalize by max value in grid
+        ds_tmp=ds_tmp/ds_tmp.max(dim=['lat','lon'])
+        
+        # Save LRP for this model
+        lrp_list.append(ds_tmp)
     
-    # Plot learning Curve for NN
-    plt.figure(figsize=(11,8.5))
-    plotLearningCurve(history)
+    ds_lrp=xr.combine_nested(lrp_list,concat_dim='model')
+    ds_lrp['model']=np.arange(nmodels)
     
-    # Plot training and target
-    plt.figure(figsize=(11,8.5))
-    plt.step(np.arange(ntrain),Y_train)
-    #plt.step(np.arange(ntrain),Ypred_log)
-    plt.step(np.arange(ntrain),Ypred_nn)
-    plt.legend(['Target','NN'])
+    ds_pred=xr.DataArray(np.asarray(pred_list).squeeze(),
+                         coords={'model':np.arange(nmodels),
+                                 'time':ds_features['time'][0:ntrain]},
+                         dims=['model','time']).to_dataset(name='pred')
     
-    # Plot Coefficients for Logistic Regression
-    #plt.figure(figsize=(11,8.5))
-    #coeffs_2d=regr_log.coef_[0].reshape(ny,nx)
-    #plt.contourf(ds_features['lon'],ds_features['lat'],coeffs_2d)
-    #plt.colorbar()
+    ds_probs=xr.DataArray(np.asarray(probs_list).squeeze(),
+                          coords={'model':np.arange(nmodels),
+                                  'time':ds_features['time'][0:ntrain],
+                                  'cat':['True','False']},
+                          dims=['model','time','cat']).to_dataset(name='probs')
     
-    # Calculate LRP 
-    a=calcLRP(nn.model,X_train)
-    ds_tmp=xr.DataArray(a.reshape(ntrain,ny,nx,nvar),
-                    coords={'time':ds_features['time'][0:ntrain],
-                            'lat':ds_features['lat'],
-                            'lon':ds_features['lon'],
-                            'var':['z500','u250']},
-                    dims=['time','lat','lon','var'])        
-    ds_lrp=ds_tmp.to_dataset(name='lrp')
+    ds_acc=xr.DataArray(np.asarray(acc_list).squeeze(),
+                        coords={'model':np.arange(nmodels)},
+                        dims=['model']).to_dataset(name='acc')
     
-    # Normalize by max value in grid
-    ds_lrp=ds_lrp/ds_lrp.max(dim=['lat','lon'])
+    ds_valacc=xr.DataArray(np.asarray(valacc_list).squeeze(),
+                           coords={'model':np.arange(nmodels)},
+                           dims=['model']).to_dataset(name='val_acc')
     
-    # Plot LRP composite in time    
-    plotLRP(ds_lrp)
+    ds_verif=xr.DataArray(np.asarray(verif_list).squeeze(),
+                          coords={'model':np.arange(nmodels),
+                                  'time':ds_features['time'][0:ntrain]},
+                          dims=['model','time']).to_dataset(name='verif')
+  
+    ds=xr.merge([ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc])
     
-    return
+    
+    return ds
 
 
-def plotLRP(ds):
+def plotLRP(ds,mean_dim):
 
     # Define map region and center longitude
     lonreg=(ds['lon'].values.min(),ds['lon'].values.max())
     latreg=(ds['lat'].values.min(),ds['lat'].values.max())
     lon_0=290
     
-    print(lonreg,latreg,lon_0)
-    
     # Plotting
-    cmap='Blues'
-    clevs=np.arange(0.0,0.5,.01)
+    cmap='fire'
+    clevs=np.arange(0.0,0.3,.005)
     
     # Variables
     vnames=ds['var'].values
@@ -779,16 +800,89 @@ def plotLRP(ds):
     
     for i,v in enumerate(vnames):
 
-        ds_tmp=ds['lrp'].sel(var=v).mean(dim='time')
+        ds_tmp=ds['lrp'].sel(var=v).mean(dim=mean_dim)
         
         m=axs[i].contourf(ds['lon'], ds['lat'],
                           ds_tmp,levels=clevs,
                           cmap=cmap,extend='both')
         axs[i].format(coast=True,lonlim=lonreg,latlim=latreg,grid=True,
                       lonlabels='b', latlabels='l',title=v,
-                      suptitle='LRP Relevance',abc=True)
+                      suptitle='Mean LRP Relevance',abc=True)
+        
         # Add US state borders    
         axs[i].add_feature(cfeature.STATES,edgecolor='gray')
 
     # Colorbar
     f.colorbar(m,loc='b',length=0.75)
+    
+def padforcnn(img_list,in_shape):
+    
+    # From https://stackoverflow.com/questions/50022256/keras-2d-padding-and-input
+    desiredX = in_shape[0]
+    desiredY = in_shape[1]
+    
+    padded_images = []
+
+    for img in img_list:
+        shape = img.shape
+        xDiff = desiredX - shape[0]
+        xLeft = xDiff//2
+        xRight = xDiff-xLeft
+
+        yDiff = desiredY - shape[1]
+        yLeft = yDiff//2
+        yRight = yDiff - yLeft
+
+        padded_images.append(np.pad(img,((xLeft,xRight),(yLeft,yRight),(0,0)), mode='constant'))
+
+    padded_images = np.asarray(padded_images)
+                             
+    return padded_images 
+
+def LRPClusters(ds,dim_name):
+
+    cmap='fire'
+    clevs=np.arange(0.0,1.0,.05)
+    nclusters=2
+    nx=len(ds['lon'])
+    ny=len(ds['lat'])
+    nt=len(ds['time'])
+    
+    vnames=ds['var'].values
+    nvars=len(vnames)
+    
+    # Define map region and center longitude
+    lonreg=(ds['lon'].values.min(),ds['lon'].values.max())
+    latreg=(ds['lat'].values.min(),ds['lat'].values.max())
+    lon_0=290
+
+    f, axs = pplt.subplots(ncols=2, nrows=nvars,
+                        proj='pcarree',proj_kw={'lon_0': lon_0},
+                        width=11.0,height=8.5)
+    
+    for i,v in enumerate(vnames):
+        
+        kmeans = KMeans(n_clusters=nclusters,random_state=1,init='random',n_init=100)
+        tmp=(ds['lrp'].sel(var=v).values).reshape(nt,nx*ny)
+        kmeans.fit(tmp)
+        y=kmeans.predict(tmp)
+        ds[dim_name]=y
+
+        cluster_comp=ds.sel(var=v).groupby(dim_name).mean()
+    
+        cluster_freq=(ds.sel(var=v).groupby(dim_name).count())/nt
+        #print(cluster_freq.values)
+        
+        for j in range(nclusters):
+            m=axs[i,j].contourf(ds['lon'], ds['lat'],cluster_comp['lrp'][j,:,:],levels=clevs,extend='both',cmap=cmap)
+            axs[i,j].format(coast=True,lonlim=lonreg,latlim=latreg,grid=True,
+                        lonlabels='b', latlabels='l',title=v+' Cluster: '+str(j))
+    
+            # Add US state borders    
+            axs[i,j].add_feature(cfeature.STATES,edgecolor='gray')
+
+    # Colorbar
+    f.colorbar(m,loc='b',length=0.75)    
+    
+    return 
+    
