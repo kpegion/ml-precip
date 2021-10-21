@@ -231,6 +231,7 @@ dependencies:
   - widgetsnbextension=3.5.1
   - wrapt=1.12.1
   - xarray=0.18.2
+  - xskillscore
   - xz=5.2.5
   - yaml=0.2.5
   - zeromq=4.3.4
