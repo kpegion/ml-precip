@@ -18,14 +18,14 @@ from sklearn.metrics import roc_auc_score
 import tensorflow as tf
 from keras import backend as k
 from keras.layers import Input, Dense, Activation, ZeroPadding2D, BatchNormalization, Flatten, Conv2D
-from keras.layers import MaxPooling2D, Dropout
+from keras.layers import MaxPooling2D, Dropout, Layer, InputSpec
 from keras.models import Sequential,Model
 from keras import regularizers
 from keras import initializers
 from keras import optimizers
 from keras.callbacks import EarlyStopping
 from keras.wrappers.scikit_learn import KerasClassifier, KerasRegressor
-from keras.utils import np_utils
+from keras.utils import np_utils, conv_utils
 
 import proplot as pplt
 import cartopy.feature as cfeature
@@ -37,7 +37,33 @@ from mlprecip_xai import *
 # Turn off deprecation warnings
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
+    
+class PeriodicPadding2D(Layer):
+    # From https://github.com/tensorflow/tensorflow/issues/956
 
+    def __init__(self, padding=3, **kwargs):
+        super(PeriodicPadding2D, self).__init__(**kwargs)
+        self.padding = conv_utils.normalize_tuple(padding, 1, 'padding')
+        self.input_spec = [InputSpec(ndim=4)]
+
+    def wrap_pad(self, input, size):
+        M1 = tf.concat([input[:,:, -size:], input, input[:,:, 0:size]], 2)
+        return M1
+
+    def compute_output_shape(self, input_shape):
+        shape = list(input_shape)
+        assert len(shape) == 4  
+        length = shape[2] + 2*self.padding[0]
+        return tuple([shape[0],shape[1],length, shape[3]])
+
+    def call(self, inputs): 
+        return self.wrap_pad(inputs, self.padding[0])
+
+    def get_config(self):
+        config = {'padding': self.padding}
+        base_config = super(PeriodicPadding2D, self).get_config()
+        return dict(list(base_config.items()) + list(config.items()))
+    
 def lasso(X,Y):
 
     """
@@ -256,10 +282,8 @@ def nnmodel_med(in_shape):
 def cnn_cat(input_shape):
 
     """
-    Implementation of the Ham et al. CNN ENSO Model prior to transfer learning.
     This function was adapted from the happyModel example 
     taken from a deeplearning.ai course taught by Andrew Ng on Coursera. 
-    It was adapted to match the CNN model of ENSO used in Ham et al. 
     
     Arguments:
     input_shape -- shape of the images of the dataset
@@ -273,37 +297,47 @@ def cnn_cat(input_shape):
     """
     def cnn_model():
         
-        # Define the input placeholder as a tensor with shape input_shape. 
-        X_input = Input(input_shape)
-
-        # Layer 1: CONV1->TANH->MAXPOOL
-        X = Conv2D(filters=2, kernel_size=(4,2), 
-                   strides = (1, 1), 
-                   padding='same', 
-                   name = 'conv1',kernel_regularizer=regularizers.l1(25))(X_input)
-        X = Activation('relu')(X)
-        X = MaxPooling2D((2, 2),strides=(2,2),
-                         name='max_pool1',padding='valid')(X)
-        X = Dropout(0.2)(X)
-        X = Activation('relu')(X)
-        X = Flatten()(X)
-    
-        # Layer 4: FC1->TANH
-        X = Dense(8, activation='relu', name='fc1',kernel_regularizer=regularizers.l2(0.02))(X)
+        X_input=Input(shape=input_shape)
         
-        # Layer 4: FC1->TANH
-        X = Dense(4, activation='relu', name='fc2')(X)
+        
+        # Layer 1: CONV1->RELU->MAXPOOL
+        X=Conv2D(filters=16, kernel_size=(3,3), 
+                 strides = (1,1), padding='valid',
+                 kernel_regularizer=regularizers.l2(20),
+                 activation='relu')(X_input)
+        X=MaxPooling2D((3,3),strides=(1,1),padding='valid')(X)
 
+        
+        # Layer 2: CONV2->RELU>MAXPOOL
+        X=Conv2D(filters=32, kernel_size=(3,3), 
+                 strides = (1, 1), 
+                 kernel_regularizer=regularizers.l2(10),
+                 padding='valid',activation='relu')(X)
+        X=MaxPooling2D((3,3),strides=(1,1),padding='valid')(X)
+
+
+        # Layer 2: CONV2->RELU>MAXPOOL
+        X=Conv2D(filters=64, kernel_size=(3,3), 
+                 strides = (1, 1), 
+                 padding='valid',activation='relu')(X)
+        X=MaxPooling2D((3,3),strides=(1,1),padding='valid')(X)
+        
+        
+        X=Flatten()(X)
+     
+        # Layer 4: FC1->RELU
+        X=Dense(128, activation='relu')(X)
+        
+        
         # Output Layer
-        X = Dense(1, activation='sigmoid',name='output')(X)
+        X=Dense(2, activation='softmax')(X)
     
-        # Create model
-        model = Model(inputs = X_input, outputs = X, name='cnn')
-
-        # Compile Model
-        model.compile(optimizer=optimizers.Adam(lr=0.0005),
-                      loss='binary_crossentropy',
+        model = Model(inputs = X_input, outputs = X)
+        
+        model.compile(optimizer=optimizers.Adam(lr=0.0001),
+                      loss='categorical_crossentropy',
                       metrics = ['accuracy'])
+
         return model
     
     return cnn_model
@@ -490,37 +524,64 @@ def testModelsRegr(ds_features,ds_target):
 
     return
 
-def testModelsCatField(ds_features,ds_target,nmodels):
+def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname=''):
+
     
-    nx=len(ds_features['lon'])
-    ny=len(ds_features['lat'])
-    nvar=2
+    
     # Setup Features (X) and Target (Y)
+
     
-    X=xr.combine_nested([ds_features['z500'],ds_features['u250']],concat_dim='var')
-    X=X.transpose('time','lat','lon','var')
-    Y=ds_target['precip'].values
+
+    # Handle padding for periodicity
+    #X=X.transpose('time','lat','lon','var')
+    #X = (X-X.mean(axis=0))/X.std(axis=0)
+    #X_shift=X.assign_coords(lon=((X['lon'] + 360) % 360)).sortby(X['lon'])
+    #print(X.shape)
+    #print(X_shift[:,None,0,:,:].values.shape)
+    #X_lat=np.hstack(X_shift[:,0.:,:].values,X.values)
+    #X_lat=np.hstack((X.values,X_shift.values[:,-1,:,:]))
+    #X_pad=np.pad(X_lat,((0,0),(0,0),(pad_length,pad_length),(0,0)),'wrap')
+    
+ 
+    if model_func=='logmodel_med':
+        pad_length=0
+        X=ds_features.to_stacked_array('features',sample_dims=['time'])
+        X=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0) 
+    else:
+        pad_length=10
+        feature_vars=list(ds_features.keys())
+        da_list=[]
+        for v in feature_vars:
+            da_list.append(ds_features[v])
+            X=xr.combine_nested(da_list,concat_dim='var') 
+            X=(X.transpose('time','lat','lon','var')).values
+            X=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0)
+            X_pad=np.pad(X,((0,0),(0,0),(pad_length,pad_length),(0,0)),'wrap')
+    
+    print('CHECK: ',np.count_nonzero(np.isnan(X_pad)))
+    
+    Y=make_ohe_thresh_med(ds_target[varname])
+    cat_labels=['Lower','Upper']
 
     print('Check Features and Target Dimensions')
     print('Features (X): ',X.shape)
     print('Target (Y): ',Y.shape)
 
-    nsamples=X.shape[0]
-    nfeatures=X.shape[1:]
+    nsamples=X_pad.shape[0]
+    nfeatures=X_pad.shape[1]
 
     print("Samples: ",nsamples)
     print("Features: ", nfeatures)
     
     # Create Train and Test Sets
-    X_train, X_test, Y_train, Y_test = train_test_split(X,Y,train_size=0.8,shuffle=False)
+    X_train, X_test, Y_train, Y_test = train_test_split(X_pad,Y,train_size=0.8,shuffle=False)
 
     ntrain=X_train.shape[0]
     ntest=X_test.shape[0]
 
     print('Training Size: ',ntrain)
-    print('Testing Size: ',ntest)
+    print('Testing Size: ',ntest)    
     
-    # Train the Models
     acc_list=[]
     valacc_list=[]
     pred_list=[]
@@ -530,76 +591,97 @@ def testModelsCatField(ds_features,ds_target,nmodels):
     
     for i in range(nmodels):
         
-        # -- Neural Network -- #
-        es = EarlyStopping(monitor='val_accuracy', mode='max', verbose=1, patience=5)
-        weights = class_weight.compute_class_weight('balanced',np.unique(Y_train),Y_train)
-        nn = KerasClassifier(build_fn=cnn_cat(X_train.shape[1:]),epochs=50, batch_size=256,verbose=0,class_weight=weights)
-        history=nn.fit(X, Y,validation_split=0.2,shuffle=False,callbacks=[es])
-        Ypred_nn=nn.predict(X_train)
-        Yprobs_nn=nn.predict_proba(X_train)
+        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
         
-        cm = confusion_matrix(Y_train, Ypred_nn)
-        disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['In Cat','Out Cat'])
-        disp.plot()
+        call_model=getattr(sys.modules[__name__],model_func)(X_train.shape[1:])
+        
+        nn = KerasClassifier(build_fn=call_model,epochs=100,batch_size=25, verbose=1)
+        history=nn.fit(X_train, Y_train,validation_data=(X_test,Y_test),callbacks=[es])
+        plotLearningCurve(history)
+        
+        # Predict category and probs
+        Ypred_test=nn.predict(X_test)
+        Yprobs_test=nn.predict_proba(X_test)
+        
+        Ypred_train=nn.predict(X_train)
+        Yprobs_train=nn.predict_proba(X_train)
         
         # Save model, history, and predictions
-        pred_list.append(Ypred_nn)
-        probs_list.append(Yprobs_nn)
-        verif_list.append(Y_train)
-        nn.model.save('../data/cnn/upper_tercile_seus.'+str(i)+'.h5')
-
-        # Print checks for this model
-        print("CHECK NN: ","In Category ", np.count_nonzero(Ypred_nn==0)," Not in category: ",np.count_nonzero(Ypred_nn==1))
-        print('NN Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
-        print('NN Test set accuracy score: ' + str(nn.score(X_test, Y_test)))
+        pred_list.append(np.concatenate([Ypred_train,Ypred_test]))
+        probs_list.append(np.concatenate([Yprobs_train,Yprobs_test]))
+        verif_list.append(np.concatenate([np.argmax(Y_train,axis=1),np.argmax(Y_test,axis=1)]))
         
+        if (fname):
+            nn.model.save(fname+'.'+str(i)+'.h5')
+        
+        # Classification Report
+        #print(classification_report(np.argmax(Y_test,axis=1), Ypred_nn))
+
+        # Scores and Check
+        print('Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
+        print('Test set accuracy score: ' + str(nn.score(X_test, Y_test)))
+        print('Test ROC AUC score: ' + str(roc_auc_score(Y_test, nn.predict_proba(X_test), multi_class='ovr')))
+    
         acc_list.append(nn.score(X_train, Y_train))
         valacc_list.append(nn.score(X_test, Y_test))
     
         # Calculate LRP 
-        a=calcLRP(nn.model,X_train)
-        ds_tmp=xr.DataArray(a.reshape(ntrain,ny,nx,nvar),
-                        coords={'time':ds_features['time'][0:ntrain],
-                                'lat':ds_features['lat'],
-                                'lon':ds_features['lon'],
-                                'var':['z500','u250']},
-                        dims=['time','lat','lon','var'])        
+        rules=['lrp.alpha_1_beta_0','lrp.z']
+        a=calcLRP(nn.model,X_pad.reshape(X_pad.shape[0],
+                                         X_pad.shape[1],
+                                         X_pad.shape[2],
+                                         X_pad.shape[3]),rules=rules)
+        b=np.asarray(a)[:,:,:,pad_length:-pad_length,:]
+        ds_tmp=xr.DataArray(b,
+                            coords={'rules':rules,
+                                    'time':ds_features['time'],
+                                    'lat':ds_features['lat'],
+                                    'lon':ds_features['lon'],
+                                    'var':feature_vars},
+                            dims=['rules','time','lat','lon','var'])        
         ds_tmp=ds_tmp.to_dataset(name='lrp')
-    
-        # Normalize by max value in grid
-        ds_tmp=ds_tmp/ds_tmp.max(dim=['lat','lon'])
-        
+                
         # Save LRP for this model
         lrp_list.append(ds_tmp)
-    
+        
+        # Clean up
+        del ds_tmp
+        
     ds_lrp=xr.combine_nested(lrp_list,concat_dim='model')
     ds_lrp['model']=np.arange(nmodels)
+    del lrp_list
     
     ds_pred=xr.DataArray(np.asarray(pred_list).squeeze(),
                          coords={'model':np.arange(nmodels),
-                                 'time':ds_features['time'][0:ntrain]},
+                                 'time':ds_features['time']},
                          dims=['model','time']).to_dataset(name='pred')
+    del pred_list
     
     ds_probs=xr.DataArray(np.asarray(probs_list).squeeze(),
                           coords={'model':np.arange(nmodels),
-                                  'time':ds_features['time'][0:ntrain],
-                                  'cat':['True','False']},
+                                  'time':ds_features['time'],
+                                  'cat':cat_labels},
                           dims=['model','time','cat']).to_dataset(name='probs')
+    del probs_list
     
     ds_acc=xr.DataArray(np.asarray(acc_list).squeeze(),
                         coords={'model':np.arange(nmodels)},
                         dims=['model']).to_dataset(name='acc')
+    del acc_list
     
     ds_valacc=xr.DataArray(np.asarray(valacc_list).squeeze(),
                            coords={'model':np.arange(nmodels)},
                            dims=['model']).to_dataset(name='val_acc')
+    del valacc_list
     
     ds_verif=xr.DataArray(np.asarray(verif_list).squeeze(),
                           coords={'model':np.arange(nmodels),
-                                  'time':ds_features['time'][0:ntrain]},
+                                  'time':ds_features['time']},
                           dims=['model','time']).to_dataset(name='verif')
+    del verif_list
   
-    ds=xr.merge([ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc])
+    ds=xr.merge([ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target])
     
+    del ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target,ds_features
     
     return ds

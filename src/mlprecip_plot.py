@@ -164,7 +164,7 @@ def plotLRP_bar(x,y1,y2,fname='',title='Neural Network'):
 
 
 
-def plotLRP_map(ds,mean_dim):
+def plotLRP_map(ds,mean_dim,r,cm='fire'):
 
     # Define map region and center longitude
     lonreg=(ds['lon'].values.min(),ds['lon'].values.max())
@@ -172,33 +172,30 @@ def plotLRP_map(ds,mean_dim):
     lon_0=290
     
     # Plotting
-    cmap='fire'
-    clevs=np.arange(0.0,0.3,.005)
     
-    # Variables
-    vnames=ds['var'].values
-    nvars=len(vnames)
+    clevs=np.arange(0,1.1,0.1)
     
-    f, axs = pplt.subplots(ncols=1, nrows=nvars,
+    f, axs = pplt.subplots(ncols=2, nrows=int(len(ds['var'])/2),
                            proj='pcarree',proj_kw={'lon_0': lon_0},
-                           width=8.5,height=11.0)
+                           width=11.0,height=8.5)
     
-    for i,v in enumerate(vnames):
+    for v,ax in zip(ds['var'].values,axs):
 
-        ds_tmp=ds['lrp'].sel(var=v).mean(dim=mean_dim)
+        print(v,ax)                  
+        ds_tmp=(ds['lrp'].sel(rules=r,var=v).mean(dim=mean_dim,skipna=True)).squeeze()
+        m=ax.pcolormesh(ds['lon'],ds['lat'],ds_tmp,
+                       levels=clevs,cmap=cm,extend='max')
         
-        m=axs[i].contourf(ds['lon'], ds['lat'],
-                          ds_tmp,levels=clevs,
-                          cmap=cmap,extend='both')
-        axs[i].format(coast=True,lonlim=lonreg,latlim=latreg,grid=True,
-                      lonlabels='b', latlabels='l',title=v,
-                      suptitle='Mean LRP Relevance',abc=True)
-        
+        ax.format(coast=True,lonlim=lonreg,latlim=latreg,grid=True,
+                  lonlabels='b', latlabels='l',title=v,abc=True)
+         
         # Add US state borders    
-        axs[i].add_feature(cfeature.STATES,edgecolor='gray')
+        ax.add_feature(cfeature.STATES,edgecolor='gray')
 
     # Colorbar
     f.colorbar(m,loc='b',length=0.75)
+                          
+    f.format(suptitle='Mean LRP Relevance')
     
 def plotTarget_med(da_target,da_pred,da_verif,thresh,fname=''):
     
