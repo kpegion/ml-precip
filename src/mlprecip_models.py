@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import dask.array as da
 import sys
+import os.path
 
 from sklearn.linear_model import LassoCV, RidgeCV, LinearRegression, LogisticRegression
 from sklearn.model_selection import train_test_split
@@ -524,29 +525,13 @@ def testModelsRegr(ds_features,ds_target):
 
     return
 
-def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname=''):
+def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname='',ofname=''):
 
-    
-    
-    # Setup Features (X) and Target (Y)
-
-    
-
-    # Handle padding for periodicity
-    #X=X.transpose('time','lat','lon','var')
-    #X = (X-X.mean(axis=0))/X.std(axis=0)
-    #X_shift=X.assign_coords(lon=((X['lon'] + 360) % 360)).sortby(X['lon'])
-    #print(X.shape)
-    #print(X_shift[:,None,0,:,:].values.shape)
-    #X_lat=np.hstack(X_shift[:,0.:,:].values,X.values)
-    #X_lat=np.hstack((X.values,X_shift.values[:,-1,:,:]))
-    #X_pad=np.pad(X_lat,((0,0),(0,0),(pad_length,pad_length),(0,0)),'wrap')
-    
- 
+    # --------  Setup Features (X) and Target (Y) ----------------------------------
     if model_func=='logmodel_med':
         pad_length=0
         X=ds_features.to_stacked_array('features',sample_dims=['time'])
-        X=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0) 
+        X_pad=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0) 
     else:
         pad_length=10
         feature_vars=list(ds_features.keys())
@@ -558,8 +543,7 @@ def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname=''
             X=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0)
             X_pad=np.pad(X,((0,0),(0,0),(pad_length,pad_length),(0,0)),'wrap')
     
-    print('CHECK: ',np.count_nonzero(np.isnan(X_pad)))
-    
+    # One Hot Encode Target (Y)
     Y=make_ohe_thresh_med(ds_target[varname])
     cat_labels=['Lower','Upper']
 
@@ -573,29 +557,29 @@ def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname=''
     print("Samples: ",nsamples)
     print("Features: ", nfeatures)
     
-    # Create Train and Test Sets
+    # ---------- Create Train and Validation Sets ---------------------------
     X_train, X_test, Y_train, Y_test = train_test_split(X_pad,Y,train_size=0.8,shuffle=False)
 
     ntrain=X_train.shape[0]
     ntest=X_test.shape[0]
 
     print('Training Size: ',ntrain)
-    print('Testing Size: ',ntest)    
+    print('Validation Size: ',ntest)    
     
-    acc_list=[]
-    valacc_list=[]
-    pred_list=[]
-    probs_list=[]
-    lrp_list=[]
-    verif_list=[]
+    #---------- Loop over all models to train and validate ------------------------
     
     for i in range(nmodels):
         
         es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
         
-        call_model=getattr(sys.modules[__name__],model_func)(X_train.shape[1:])
+        if len(X_train.shape[1:])==1:
+            in_shape=X_train.shape[1]
+        else:
+            in_shape=X_train.shape[1:]
+            
+        call_model=getattr(sys.modules[__name__],model_func)(in_shape)
         
-        nn = KerasClassifier(build_fn=call_model,epochs=100,batch_size=25, verbose=1)
+        nn = KerasClassifier(build_fn=call_model,epochs=100,batch_size=25, verbose=0)
         history=nn.fit(X_train, Y_train,validation_data=(X_test,Y_test),callbacks=[es])
         plotLearningCurve(history)
         
@@ -606,82 +590,61 @@ def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname=''
         Ypred_train=nn.predict(X_train)
         Yprobs_train=nn.predict_proba(X_train)
         
-        # Save model, history, and predictions
-        pred_list.append(np.concatenate([Ypred_train,Ypred_test]))
-        probs_list.append(np.concatenate([Yprobs_train,Yprobs_test]))
-        verif_list.append(np.concatenate([np.argmax(Y_train,axis=1),np.argmax(Y_test,axis=1)]))
-        
+        # Save Model
         if (fname):
             nn.model.save(fname+'.'+str(i)+'.h5')
-        
+                    
         # Classification Report
         #print(classification_report(np.argmax(Y_test,axis=1), Ypred_nn))
 
         # Scores and Check
         print('Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
-        print('Test set accuracy score: ' + str(nn.score(X_test, Y_test)))
-        print('Test ROC AUC score: ' + str(roc_auc_score(Y_test, nn.predict_proba(X_test), multi_class='ovr')))
-    
-        acc_list.append(nn.score(X_train, Y_train))
-        valacc_list.append(nn.score(X_test, Y_test))
-    
-        # Calculate LRP 
+        print('Validation set accuracy score: ' + str(nn.score(X_test, Y_test)))
+        print('Validation ROC AUC score: ' + str(roc_auc_score(Y_test, nn.predict_proba(X_test), multi_class='ovr')))
+        
+        # Calculate LRP (TO-DO: put this into and return ds_lrp)
         rules=['lrp.alpha_1_beta_0','lrp.z']
         a=calcLRP(nn.model,X_pad.reshape(X_pad.shape[0],
                                          X_pad.shape[1],
                                          X_pad.shape[2],
                                          X_pad.shape[3]),rules=rules)
         b=np.asarray(a)[:,:,:,pad_length:-pad_length,:]
-        ds_tmp=xr.DataArray(b,
+        
+        # Put all model output information into a Dataset to be written to a netcdf file (Function?)
+        ds_lrp=xr.DataArray(b,
                             coords={'rules':rules,
                                     'time':ds_features['time'],
                                     'lat':ds_features['lat'],
                                     'lon':ds_features['lon'],
                                     'var':feature_vars},
-                            dims=['rules','time','lat','lon','var'])        
-        ds_tmp=ds_tmp.to_dataset(name='lrp')
-                
-        # Save LRP for this model
-        lrp_list.append(ds_tmp)
+                            dims=['rules','time','lat','lon','var']).to_dataset(name='lrp')    
         
-        # Clean up
-        del ds_tmp
+        ds_pred=xr.DataArray(np.concatenate([Ypred_train,Ypred_test]),
+                             coords={'time':ds_features['time']},
+                             dims=['time']).to_dataset(name='pred')
+    
+        ds_probs=xr.DataArray(np.concatenate([Yprobs_train,Yprobs_test]),
+                              coords={'time':ds_features['time'],
+                                      'cat':cat_labels},
+                              dims=['time','cat']).to_dataset(name='probs')
+    
+        ds_acc=xr.DataArray(nn.score(X_train, Y_train),
+                            coords={'model':[i]},
+                            dims=['model']).to_dataset(name='acc')
+    
+        ds_valacc=xr.DataArray(nn.score(X_test, Y_test),
+                               coords={'model':[i]},
+                               dims=['model']).to_dataset(name='val_acc')
+    
+        ds_verif=xr.DataArray(np.concatenate([np.argmax(Y_train,axis=1),np.argmax(Y_test,axis=1)]),
+                              coords={'time':ds_features['time']},
+                              dims=['time']).to_dataset(name='verif')
+          
+        ds=xr.merge([ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target])
+    
+        # Write all model output information 
+        if (ofname):
+            model_output_fname=ofname+'.'+str(i)+'.nc'
+            ds.to_netcdf(model_output_fname) 
         
-    ds_lrp=xr.combine_nested(lrp_list,concat_dim='model')
-    ds_lrp['model']=np.arange(nmodels)
-    del lrp_list
-    
-    ds_pred=xr.DataArray(np.asarray(pred_list).squeeze(),
-                         coords={'model':np.arange(nmodels),
-                                 'time':ds_features['time']},
-                         dims=['model','time']).to_dataset(name='pred')
-    del pred_list
-    
-    ds_probs=xr.DataArray(np.asarray(probs_list).squeeze(),
-                          coords={'model':np.arange(nmodels),
-                                  'time':ds_features['time'],
-                                  'cat':cat_labels},
-                          dims=['model','time','cat']).to_dataset(name='probs')
-    del probs_list
-    
-    ds_acc=xr.DataArray(np.asarray(acc_list).squeeze(),
-                        coords={'model':np.arange(nmodels)},
-                        dims=['model']).to_dataset(name='acc')
-    del acc_list
-    
-    ds_valacc=xr.DataArray(np.asarray(valacc_list).squeeze(),
-                           coords={'model':np.arange(nmodels)},
-                           dims=['model']).to_dataset(name='val_acc')
-    del valacc_list
-    
-    ds_verif=xr.DataArray(np.asarray(verif_list).squeeze(),
-                          coords={'model':np.arange(nmodels),
-                                  'time':ds_features['time']},
-                          dims=['model','time']).to_dataset(name='verif')
-    del verif_list
-  
-    ds=xr.merge([ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target])
-    
-    del ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target,ds_features
-    
-    return ds
+    return 

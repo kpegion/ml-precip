@@ -125,7 +125,7 @@ def plotLearningCurve(history):
     plt.title('model loss')
     plt.ylabel('loss')
     plt.xlabel('epoch')
-    plt.legend(['train', 'test'], loc='upper left')
+    plt.legend(['train', 'val'], loc='upper left')
     return
 
 def plot_reliability(ds_model,cat_labels):
