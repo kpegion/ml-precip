@@ -13,13 +13,13 @@ from mlprecip_utils import *
 def calcLRP(model,X,rules=['lrp.z']):
     
     # Strip softmax layer
-    model = innvestigate.utils.model_wo_softmax(model)
+    modelwosf = innvestigate.utils.model_wo_softmax(model)
     
     a_list=[]
     for rule in rules:
 
         # Create analyzer
-        analyzer = innvestigate.create_analyzer(rule, model)
+        analyzer = innvestigate.create_analyzer(rule, modelwosf)
 
         # Apply analyzer w.r.t. maximum activated output-neuron
         a = analyzer.analyze(X)

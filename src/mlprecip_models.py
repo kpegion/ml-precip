@@ -13,7 +13,7 @@ from sklearn.preprocessing import Binarizer, LabelEncoder
 from sklearn.utils import class_weight
 from sklearn.cluster import KMeans
 from sklearn.metrics import ConfusionMatrixDisplay,  confusion_matrix, classification_report
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, accuracy_score
 
 
 import tensorflow as tf
@@ -300,42 +300,42 @@ def cnn_cat(input_shape):
         
         X_input=Input(shape=input_shape)
         
-        
         # Layer 1: CONV1->RELU->MAXPOOL
         X=Conv2D(filters=16, kernel_size=(3,3), 
                  strides = (1,1), padding='valid',
                  kernel_regularizer=regularizers.l2(20),
-                 activation='relu')(X_input)
-        X=MaxPooling2D((3,3),strides=(1,1),padding='valid')(X)
-
+                 activation='relu',name='c1')(X_input)
+        X=MaxPooling2D((3,3),strides=(1,1),padding='valid',name='mp1')(X)
         
         # Layer 2: CONV2->RELU>MAXPOOL
         X=Conv2D(filters=32, kernel_size=(3,3), 
-                 strides = (1, 1), 
-                 kernel_regularizer=regularizers.l2(10),
-                 padding='valid',activation='relu')(X)
+                 strides = (1, 1),
+                 padding='valid',activation='relu',
+                kernel_regularizer=regularizers.l2(10))(X)
         X=MaxPooling2D((3,3),strides=(1,1),padding='valid')(X)
 
-
-        # Layer 2: CONV2->RELU>MAXPOOL
+        # Layer 3: CONV3->RELU>MAXPOOL
+        #X=Conv2D(filters=16, kernel_size=(3,3), 
+        #         strides = (1, 1),
+        #         padding='valid',activation='relu',
+        #         kernel_regularizer=regularizers.l2(10))(X)
+        #X=MaxPooling2D((3,3),strides=(1,1),padding='valid')(X)
         X=Conv2D(filters=64, kernel_size=(3,3), 
-                 strides = (1, 1), 
+                 strides = (1, 1),
                  padding='valid',activation='relu')(X)
         X=MaxPooling2D((3,3),strides=(1,1),padding='valid')(X)
-        
         
         X=Flatten()(X)
-     
+             
         # Layer 4: FC1->RELU
-        X=Dense(128, activation='relu')(X)
-        
+        X=Dense(128, activation='relu',name='fc1')(X)
         
         # Output Layer
-        X=Dense(2, activation='softmax')(X)
+        X=Dense(2, activation='softmax',name='dense_output')(X)
     
         model = Model(inputs = X_input, outputs = X)
         
-        model.compile(optimizer=optimizers.Adam(lr=0.0001),
+        model.compile(optimizer=optimizers.Adam(lr=3e-5),
                       loss='categorical_crossentropy',
                       metrics = ['accuracy'])
 
@@ -525,40 +525,37 @@ def testModelsRegr(ds_features,ds_target):
 
     return
 
-def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname='',ofname=''):
+def trainCNN(model_func,ds_features,ds_target,varname,nmodels,fname='',ofname=''):
 
     # --------  Setup Features (X) and Target (Y) ----------------------------------
-    if model_func=='logmodel_med':
-        pad_length=0
-        X=ds_features.to_stacked_array('features',sample_dims=['time'])
-        X_pad=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0) 
-    else:
-        pad_length=10
-        feature_vars=list(ds_features.keys())
-        da_list=[]
-        for v in feature_vars:
-            da_list.append(ds_features[v])
-            X=xr.combine_nested(da_list,concat_dim='var') 
-            X=(X.transpose('time','lat','lon','var')).values
-            X=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0)
-            X_pad=np.pad(X,((0,0),(0,0),(pad_length,pad_length),(0,0)),'wrap')
+    #if model_func=='logmodel_med':
+    #    pad_length=0
+    #    X=ds_features.to_stacked_array('features',sample_dims=['time'])
+    #    X_pad=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0) 
+    #else:
+    pad_length=10
+    feature_vars=list(ds_features.keys())
+    da_list=[]
+    for v in feature_vars:
+        da_list.append(ds_features[v])
+        X=xr.combine_nested(da_list,concat_dim='var') 
+        X=(X.transpose('time','lat','lon','var')).values
+        X=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0)
+        X_pad=np.pad(X,((0,0),(0,0),(pad_length,pad_length),(0,0)),'wrap')
     
     # One Hot Encode Target (Y)
     Y=make_ohe_thresh_med(ds_target[varname])
-    cat_labels=['Lower','Upper']
+    cat_labels=['Negative','Positive']
 
     print('Check Features and Target Dimensions')
-    print('Features (X): ',X.shape)
+    print('Features (X): ',X_pad.shape)
     print('Target (Y): ',Y.shape)
 
-    nsamples=X_pad.shape[0]
-    nfeatures=X_pad.shape[1]
-
-    print("Samples: ",nsamples)
-    print("Features: ", nfeatures)
+    #nsamples=X_pad.shape[0]
+    #nfeatures=X_pad.shape[1]
     
     # ---------- Create Train and Validation Sets ---------------------------
-    X_train, X_test, Y_train, Y_test = train_test_split(X_pad,Y,train_size=0.8,shuffle=False)
+    X_train, X_test, Y_train, Y_test = train_test_split(X_pad,Y,train_size=0.9,shuffle=False)
 
     ntrain=X_train.shape[0]
     ntest=X_test.shape[0]
@@ -568,9 +565,9 @@ def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname=''
     
     #---------- Loop over all models to train and validate ------------------------
     
-    for i in range(nmodels):
+    for i in range(6,nmodels):
         
-        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
+        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1)
         
         if len(X_train.shape[1:])==1:
             in_shape=X_train.shape[1]
@@ -581,6 +578,7 @@ def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname=''
         
         nn = KerasClassifier(build_fn=call_model,epochs=100,batch_size=25, verbose=0)
         history=nn.fit(X_train, Y_train,validation_data=(X_test,Y_test),callbacks=[es])
+
         plotLearningCurve(history)
         
         # Predict category and probs
@@ -594,9 +592,6 @@ def testModelsCatField(model_func,ds_features,ds_target,varname,nmodels,fname=''
         if (fname):
             nn.model.save(fname+'.'+str(i)+'.h5')
                     
-        # Classification Report
-        #print(classification_report(np.argmax(Y_test,axis=1), Ypred_nn))
-
         # Scores and Check
         print('Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
         print('Validation set accuracy score: ' + str(nn.score(X_test, Y_test)))
