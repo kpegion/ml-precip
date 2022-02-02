@@ -39,184 +39,6 @@ from mlprecip_xai import *
 tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
     
-class PeriodicPadding2D(Layer):
-    # From https://github.com/tensorflow/tensorflow/issues/956
-
-    def __init__(self, padding=3, **kwargs):
-        super(PeriodicPadding2D, self).__init__(**kwargs)
-        self.padding = conv_utils.normalize_tuple(padding, 1, 'padding')
-        self.input_spec = [InputSpec(ndim=4)]
-
-    def wrap_pad(self, input, size):
-        M1 = tf.concat([input[:,:, -size:], input, input[:,:, 0:size]], 2)
-        return M1
-
-    def compute_output_shape(self, input_shape):
-        shape = list(input_shape)
-        assert len(shape) == 4  
-        length = shape[2] + 2*self.padding[0]
-        return tuple([shape[0],shape[1],length, shape[3]])
-
-    def call(self, inputs): 
-        return self.wrap_pad(inputs, self.padding[0])
-
-    def get_config(self):
-        config = {'padding': self.padding}
-        base_config = super(PeriodicPadding2D, self).get_config()
-        return dict(list(base_config.items()) + list(config.items()))
-    
-def lasso(X,Y):
-
-    """
-    Fit regression model using Lasso (R1) regularization
-
-    Args:
-    X : numpy array representing the features for all nsamples of the training data  (nsamples,nfeatures)
-    Y : numpy array representing the target for all nsamples of the training data (nsamples)
-
-    Returns:
-    model, coefficients, r-squared, and the predicted values of Y
-
-    """
-
-    regr = LassoCV(cv=5,max_iter=5000).fit(X,Y)
-    pred = regr.predict(X)
-
-    return regr,pred
-
-def ridge(X,Y):
-
-    """
-    Fit regression model using Ridge (R2) regularization
-
-    Args:
-    X : numpy array representing the features for all nsamples of the training data  (nsamples,nfeatures)
-    Y : numpy array representing the target for all nsamples of the training data (nsamples)
-
-    Returns:
-    model, coefficients, r-squared, and the predicted values of Y
-
-    """
-
-    regr = RidgeCV(cv=5).fit(X,Y)
-    pred = regr.predict(X)
-
-    return regr,pred
-
-def lr(X,Y):
-
-    """
-    Fit regression model using standard regression model without regularization
-
-    Args:
-    X : numpy array representing the features for all nsamples of the training data  (nsamples,nfeatures)
-    Y : numpy array representing the target for all nsamples of the training data (nsamples)
-
-    Returns:
-    model, coefficients, r-squared, and the predicted values of Y
-
-    """
-
-    regr = LinearRegression().fit(X,Y)
-    pred = regr.predict(X)
-
-    return regr,pred
-
-def logistic(X,Y):
-
-    """
-    Fit regression model using standard logistic regression model. Uses balanced class weighting in 
-    case target classes are imbalanced.
-
-    Args:
-    X : numpy array representing the features for all nsamples of the training data  (nsamples,nfeatures)
-    Y : numpy array representing the target for all nsamples of the training data (nsamples)
-
-    Returns:
-    model, coefficients, r-squared, and the predicted values of Y
-
-    """
-
-    regr = LogisticRegression(penalty='none',multi_class='multinomial',solver='sag').fit(X,Y)
-    pred = regr.predict(X)
-    
-    cm = confusion_matrix(Y, pred)
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm)
-    disp.plot()
-    
-    print(classification_report(Y, pred))
-
-
-    return regr,pred
-
-def tomsensomodel_regression(in_shape):
-
-    """
-    Fit fully connected neural network Input(nfeatures)->8->8->Output(1)
-
-    Args:
-    X : numpy array representing the features for all nsamples of the training data  (nsamples,nfeatures)
-    Y : numpy array representing the target for all nsamples of the training data (nsamples)
-
-    Returns:
-    model
-
-    """
-    
-    def regr_model():
-        model = Sequential()
-
-        model.add(Dense(8, input_dim=in_shape,activation='relu',
-                kernel_initializer='he_normal',
-                kernel_regularizer=regularizers.l2(0.01),
-                bias_initializer='he_normal'))
-
-        model.add(Dense(8, activation='tanh',
-                    kernel_initializer='he_normal',
-                    bias_initializer='he_normal'))
-        
-        model.add(Dense(1,name='output'))
-
-        model.compile(optimizer=optimizers.Adam(),
-                      loss ='mean_squared_error',
-                      metrics = [r2_score])
-    
-        return model
-    return regr_model
-
-def tomsensomodel_cat_terc(in_shape):
-
-    """
-    Fit fully connected neural network Input(nfeatures)->8->8->Output(3)
-
-    Args:
-    X : numpy array representing the features for all nsamples of the training data  (nsamples,nfeatures)
-    Y : numpy array representing the target for all nsamples of the training in one hot encoding format (nsamples,ncategories)
-
-    Returns:
-    model
-
-    """
-    def cat_model_terc():
-        
-        model = Sequential()
-        model.add(Dense(8, input_dim=in_shape,activation='relu',
-                        kernel_initializer='he_normal',
-                        bias_initializer='he_normal'))
-        
-        model.add(Dense(8, activation='relu',
-                kernel_initializer='he_normal',
-                bias_initializer='he_normal'))
-        
-        model.add(Dense(3,activation='softmax'))
-
-        model.compile(optimizer=optimizers.Adam(lr=0.0001),
-                      loss='categorical_crossentropy',
-                      metrics = ['accuracy'])
-   
-        return model
-    return cat_model_terc
-
 def logmodel_med(in_shape):
 
     """
@@ -236,7 +58,7 @@ def logmodel_med(in_shape):
         
         model.add(Dense(2,activation='softmax',input_dim=in_shape))
 
-        model.compile(optimizer=optimizers.Adam(lr=0.0001),
+        model.compile(optimizer=optimizers.Adam(lr=1e-5),
                       loss='categorical_crossentropy',
                       metrics = ['accuracy'])
 
@@ -265,13 +87,9 @@ def nnmodel_med(in_shape):
                         kernel_initializer='he_normal',
                         bias_initializer='he_normal'))
        
-        #model.add(Dense(8, activation='relu',
-        #        kernel_initializer='he_normal',
-        #        bias_initializer='he_normal'))
-        
         model.add(Dense(2,activation='softmax'))
 
-        model.compile(optimizer=optimizers.Adam(lr=0.0001),
+        model.compile(optimizer=optimizers.Adam(lr=1e-5),
                       loss='categorical_crossentropy',
                       metrics = ['accuracy'])
         
@@ -315,11 +133,6 @@ def cnn_cat(input_shape):
         X=MaxPooling2D((3,3),strides=(1,1),padding='valid')(X)
 
         # Layer 3: CONV3->RELU>MAXPOOL
-        #X=Conv2D(filters=16, kernel_size=(3,3), 
-        #         strides = (1, 1),
-        #         padding='valid',activation='relu',
-        #         kernel_regularizer=regularizers.l2(10))(X)
-        #X=MaxPooling2D((3,3),strides=(1,1),padding='valid')(X)
         X=Conv2D(filters=64, kernel_size=(3,3), 
                  strides = (1, 1),
                  padding='valid',activation='relu')(X)
@@ -343,47 +156,37 @@ def cnn_cat(input_shape):
     
     return cnn_model
 
-def testModelsCat(model_func,ds_features,ds_target,v,nmodels,fname=''):
+def trainIndexModels(model_func,ds_features,ds_target,v,nmodels,fname='',ofname=''):
     
+    feature_vars=list(ds_features.keys())
     # Setup Features (X) and Target (Y)
     
-    X=ds_features.to_stacked_array('features',sample_dims=['time'])
+    X=ds_features.to_stacked_array('features',sample_dims=['time']).values
     Y=make_ohe_thresh_med(ds_target[v])
-    cat_labels=['Lower','Upper']
+    cat_labels=['Negative','Positive']
 
     print('Check Features and Target Dimensions')
     print('Features (X): ',X.shape)
     print('Target (Y): ',Y.shape)
-
-    nsamples=X.shape[0]
-    nfeatures=X.shape[1]
-
-    print("Samples: ",nsamples)
-    print("Features: ", nfeatures)
     
-    # Create Train and Test Sets
-    X_train, X_test, Y_train, Y_test = train_test_split(X,Y,train_size=0.8,shuffle=False)
+    # ---------- Create Train and Validation Sets ---------------------------
+    X_train, X_test, Y_train, Y_test = train_test_split(X,Y,train_size=0.9,shuffle=False)
 
     ntrain=X_train.shape[0]
     ntest=X_test.shape[0]
 
     print('Training Size: ',ntrain)
-    print('Testing Size: ',ntest)    
-    
-    acc_list=[]
-    valacc_list=[]
-    pred_list=[]
-    probs_list=[]
-    lrp_list=[]
-    verif_list=[]
+    print('Validation Size: ',ntest)    
     
     for i in range(nmodels):
         
-        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=10)
+        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
         call_model=getattr(sys.modules[__name__],model_func)(X_train.shape[1])
         nn = KerasClassifier(build_fn=call_model,epochs=250,batch_size=25, verbose=0)
-        history=nn.fit(X_train, Y_train,validation_data=(X_test,Y_test),callbacks=[es])
+        #history=nn.fit(X_train, Y_train,validation_data=(X_test,Y_test),callbacks=[es])
+        history=nn.fit(X_train, Y_train,validation_data=(X_test,Y_test))
         
+        plotLearningCurve(history)
         
         # Predict category and probs
         Ypred_test=nn.predict(X_test)
@@ -392,147 +195,62 @@ def testModelsCat(model_func,ds_features,ds_target,v,nmodels,fname=''):
         Ypred_train=nn.predict(X_train)
         Yprobs_train=nn.predict_proba(X_train)
         
-        # Save model, history, and predictions
-        pred_list.append(np.concatenate([Ypred_train,Ypred_test]))
-        probs_list.append(np.concatenate([Yprobs_train,Yprobs_test]))
-        verif_list.append(np.concatenate([np.argmax(Y_train,axis=1),np.argmax(Y_test,axis=1)]))
-        
+        # Save Model
         if (fname):
             nn.model.save(fname+'.'+str(i)+'.h5')
-        
-        # Classification Report
-        #print(classification_report(np.argmax(Y_test,axis=1), Ypred_nn))
-
+                    
         # Scores and Check
         print('Training set accuracy score: ' + str(nn.score(X_train, Y_train)))
-        print('Test set accuracy score: ' + str(nn.score(X_test, Y_test)))
-        print('Test ROC AUC score: ' + str(roc_auc_score(Y_test, nn.predict_proba(X_test), multi_class='ovr')))
-    
-        acc_list.append(nn.score(X_train, Y_train))
-        valacc_list.append(nn.score(X_test, Y_test))
-    
-        # Calculate LRP 
-        rules=['lrp.alpha_1_beta_0','lrp.z']
-            
-        a=calcLRP(nn.model,X,rules=rules)
-        ds_tmp=xr.DataArray(np.asarray(a).reshape(len(rules),nsamples,nfeatures),
-                            coords={'rules':rules,'time':ds_features['time'],
-                            'features':list(ds_features.keys())},
-                            dims=['rules','time','features'])        
-        ds_tmp=ds_tmp.to_dataset(name='lrp')
-                
-        # Save LRP for this model
-        lrp_list.append(ds_tmp)
+        print('Validation set accuracy score: ' + str(nn.score(X_test, Y_test)))
+        print('Validation ROC AUC score: ' + str(roc_auc_score(Y_test, nn.predict_proba(X_test), multi_class='ovr')))
         
-    ds_lrp=xr.combine_nested(lrp_list,concat_dim='model')
-    ds_lrp['model']=np.arange(nmodels)
+        # Calculate LRP
+        rules=['lrp.alpha_1_beta_0','lrp.z']
+        a=calcLRP(nn.model,X.reshape(X.shape[0],X.shape[1]),rules=rules)
+        b=np.asarray(a)
+                
+        # Put all model output information into a Dataset to be written to a netcdf file 
+        ds_lrp=xr.DataArray(b,
+                            coords={'rules':rules,
+                                    'time':ds_features['time'],
+                                    'var':feature_vars},
+                            dims=['rules','time','var']).to_dataset(name='lrp')    
+        
+        ds_pred=xr.DataArray(np.concatenate([Ypred_train,Ypred_test]),
+                             coords={'time':ds_features['time']},
+                             dims=['time']).to_dataset(name='pred')
     
-    ds_pred=xr.DataArray(np.asarray(pred_list).squeeze(),
-                         coords={'model':np.arange(nmodels),
-                                 'time':ds_features['time']},
-                         dims=['model','time']).to_dataset(name='pred')
+        ds_probs=xr.DataArray(np.concatenate([Yprobs_train,Yprobs_test]),
+                              coords={'time':ds_features['time'],
+                                      'cat':cat_labels},
+                              dims=['time','cat']).to_dataset(name='probs')
     
-    ds_probs=xr.DataArray(np.asarray(probs_list).squeeze(),
-                          coords={'model':np.arange(nmodels),
-                                  'time':ds_features['time'],
-                                  'cat':cat_labels},
-                          dims=['model','time','cat']).to_dataset(name='probs')
+        ds_acc=xr.DataArray(nn.score(X_train, Y_train),
+                            coords={'model':[i]},
+                            dims=['model']).to_dataset(name='acc')
     
-    ds_acc=xr.DataArray(np.asarray(acc_list).squeeze(),
-                        coords={'model':np.arange(nmodels)},
-                        dims=['model']).to_dataset(name='acc')
+        ds_valacc=xr.DataArray(nn.score(X_test, Y_test),
+                               coords={'model':[i]},
+                               dims=['model']).to_dataset(name='val_acc')
     
-    ds_valacc=xr.DataArray(np.asarray(valacc_list).squeeze(),
-                           coords={'model':np.arange(nmodels)},
-                           dims=['model']).to_dataset(name='val_acc')
+        ds_verif=xr.DataArray(np.concatenate([np.argmax(Y_train,axis=1),np.argmax(Y_test,axis=1)]),
+                              coords={'time':ds_features['time']},
+                              dims=['time']).to_dataset(name='verif')
+          
+        ds=xr.merge([ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target])
     
-    ds_verif=xr.DataArray(np.asarray(verif_list).squeeze(),
-                          coords={'model':np.arange(nmodels),
-                                  'time':ds_features['time']},
-                          dims=['model','time']).to_dataset(name='verif')
-  
-    ds=xr.merge([ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target])
-
+        # Write all model output information 
+        if (ofname):
+            model_output_fname=ofname+'.'+str(i)+'.nc'
+            ds.to_netcdf(model_output_fname) 
+        
     
-    return ds
+    return 
 
-
-def testModelsRegr(ds_features,ds_target):
-
-    # Setup Features (X) and Target (Y)
-    
-    X=ds_features.to_stacked_array('features',sample_dims=['time'])
-    Y=ds_target['precip'].values
-
-    #print('Check Features and Target Dimensions')
-    #print('Features (X): ',X.shape)
-    #print('Target (Y): ',Y.shape)
-
-    nsamples=X.shape[0]
-    nfeatures=X.shape[1]
-
-    #print("Samples: ",nsamples)
-    #print("Features: ", nfeatures)
-    
-    # Create Train and Test Sets
-    X_train, X_test, Y_train, Y_test = train_test_split(X,Y,train_size=0.8,shuffle=False)
-
-    ntrain=X_train.shape[0]
-    ntest=X_test.shape[0]
-
-    #print('Training Size: ',ntrain)
-    #print('Testing Size: ',ntest)
-    
-    # Make a heatmap
-    heatmap(X_train,Y_train,list(ds_features.keys()))
-    
-    # Train the Models
-    
-    # -- Standard Linear Regression
-    regr_lr,Ypred_lr=lr(X_train,Y_train)
-    print('Regression Training set R^2 score: ' + str(regr_lr.score(X_train,Y_train)))
-    print('Regression Test set R^2 score: ' + str(regr_lr.score(X_test,Y_test)))
-
-    # -- Linear Regression with LASSO Regularization
-    regr_lasso,Ypred_lasso=lasso(X_train,Y_train)
-    print('LASSO Training set R^2 score: ' + str(regr_lasso.score(X_train,Y_train)))
-    print('LASSO Test set R^2 score: ' + str(regr_lasso.score(X_test,Y_test)))
-
-    # -- Linear Regression with Ridge Regularization
-    regr_ridge,Ypred_ridge=ridge(X_train,Y_train)
-    print('Ridge Training set R^2 score: ' + str(regr_ridge.score(X_train,Y_train)))
-    print('Ridge Test set R^2 score: ' + str(regr_ridge.score(X_test,Y_test)))
-
-    # -- Neural Network
-    nn = KerasRegressor(build_fn=tomsensomodel_regression(X_train.shape[1]),epochs=250, batch_size=25,verbose=0)
-    history=nn.fit(X_train, Y_train)
-    Ypred_nn=nn.predict(X_train)
-    print('NN Training set R^2 score: ' + str(nn.score(X_train, Y_train)))
-    print('NN Test set R^2 score: ' + str(nn.score(X_test, Y_test)))
-
-    # Plot target and fit 
-    plt.figure(figsize=(11,8.5))
-    plt.plot(Y_train)
-    plt.plot(Ypred_lr)
-    plt.plot(Ypred_ridge)
-    plt.plot(Ypred_lasso)
-    plt.plot(Ypred_nn)
-    plt.legend(['Target','Standard','Ridge','LASSO','NN'])
-    
-    # Plot Coefficients for Standard Linear Regression
-    plt.figure(figsize=(11,8.5))
-    plt.bar(list(ds_features.keys()),regr_lr.coef_)              
-
-    return
 
 def trainCNN(model_func,ds_features,ds_target,varname,nmodels,fname='',ofname=''):
 
     # --------  Setup Features (X) and Target (Y) ----------------------------------
-    #if model_func=='logmodel_med':
-    #    pad_length=0
-    #    X=ds_features.to_stacked_array('features',sample_dims=['time'])
-    #    X_pad=xr.where(X!=0,(X-np.nanmean(X,axis=0))/np.nanstd(X,axis=0),0.0) 
-    #else:
     pad_length=10
     feature_vars=list(ds_features.keys())
     da_list=[]
@@ -550,9 +268,6 @@ def trainCNN(model_func,ds_features,ds_target,varname,nmodels,fname='',ofname=''
     print('Check Features and Target Dimensions')
     print('Features (X): ',X_pad.shape)
     print('Target (Y): ',Y.shape)
-
-    #nsamples=X_pad.shape[0]
-    #nfeatures=X_pad.shape[1]
     
     # ---------- Create Train and Validation Sets ---------------------------
     X_train, X_test, Y_train, Y_test = train_test_split(X_pad,Y,train_size=0.9,shuffle=False)
@@ -565,7 +280,7 @@ def trainCNN(model_func,ds_features,ds_target,varname,nmodels,fname='',ofname=''
     
     #---------- Loop over all models to train and validate ------------------------
     
-    for i in range(6,nmodels):
+    for i in range(83,nmodels):
         
         es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1)
         
@@ -605,7 +320,7 @@ def trainCNN(model_func,ds_features,ds_target,varname,nmodels,fname='',ofname=''
                                          X_pad.shape[3]),rules=rules)
         b=np.asarray(a)[:,:,:,pad_length:-pad_length,:]
         
-        # Put all model output information into a Dataset to be written to a netcdf file (Function?)
+        # Put all model output information into a Dataset to be written to a netcdf file 
         ds_lrp=xr.DataArray(b,
                             coords={'rules':rules,
                                     'time':ds_features['time'],
