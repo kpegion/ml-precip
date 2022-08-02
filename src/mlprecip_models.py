@@ -56,11 +56,15 @@ def logmodel_med(in_shape):
         
         model = Sequential()
         
-        model.add(Dense(2,activation='softmax',input_dim=in_shape))
+        model.add(Dense(2,activation='softmax',input_dim=in_shape,
+                        kernel_regularizer=regularizers.L1L2(l1=5,l2=0.001)))
 
         model.compile(optimizer=optimizers.Adam(lr=1e-5),
                       loss='categorical_crossentropy',
                       metrics = ['accuracy'])
+        #model.compile(optimizer=optimizers.Adam(lr=1e-5),
+        #              loss='categorical_crossentropy',
+        #              metrics = ['accuracy'])
 
    
         return model
@@ -158,8 +162,12 @@ def cnn_cat(input_shape):
 
 def trainIndexModels(model_func,ds_features,ds_target,v,nmodels,fname='',ofname=''):
     
+    
     feature_vars=list(ds_features.keys())
     # Setup Features (X) and Target (Y)
+    
+    print(ds_features)
+    print(ds_target)
     
     X=ds_features.to_stacked_array('features',sample_dims=['time']).values
     Y=make_ohe_thresh_med(ds_target[v])
@@ -178,11 +186,12 @@ def trainIndexModels(model_func,ds_features,ds_target,v,nmodels,fname='',ofname=
     print('Training Size: ',ntrain)
     print('Validation Size: ',ntest)    
     
-    for i in range(nmodels):
+    for i in range(50,nmodels):
         
         es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
         call_model=getattr(sys.modules[__name__],model_func)(X_train.shape[1])
         nn = KerasClassifier(build_fn=call_model,epochs=250,batch_size=25, verbose=0)
+        #nn = KerasClassifier(build_fn=call_model,epochs=500,batch_size=25, verbose=0)
         #history=nn.fit(X_train, Y_train,validation_data=(X_test,Y_test),callbacks=[es])
         history=nn.fit(X_train, Y_train,validation_data=(X_test,Y_test))
         
@@ -210,11 +219,11 @@ def trainIndexModels(model_func,ds_features,ds_target,v,nmodels,fname='',ofname=
         b=np.asarray(a)
                 
         # Put all model output information into a Dataset to be written to a netcdf file 
-        ds_lrp=xr.DataArray(b,
-                            coords={'rules':rules,
-                                    'time':ds_features['time'],
-                                    'var':feature_vars},
-                            dims=['rules','time','var']).to_dataset(name='lrp')    
+        #ds_lrp=xr.DataArray(b,
+        #                    coords={'rules':rules,
+        #                            'time':ds_features['time'],
+        #                            'var':feature_vars},
+        #                    dims=['rules','time','var']).to_dataset(name='lrp')    
         
         ds_pred=xr.DataArray(np.concatenate([Ypred_train,Ypred_test]),
                              coords={'time':ds_features['time']},
@@ -237,7 +246,8 @@ def trainIndexModels(model_func,ds_features,ds_target,v,nmodels,fname='',ofname=
                               coords={'time':ds_features['time']},
                               dims=['time']).to_dataset(name='verif')
           
-        ds=xr.merge([ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target])
+        ds=xr.merge([ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target])
+        #ds=xr.merge([ds_lrp,ds_pred,ds_verif,ds_probs,ds_acc,ds_valacc,ds_target])
     
         # Write all model output information 
         if (ofname):
@@ -280,9 +290,9 @@ def trainCNN(model_func,ds_features,ds_target,varname,nmodels,fname='',ofname=''
     
     #---------- Loop over all models to train and validate ------------------------
     
-    for i in range(83,nmodels):
+    for i in range(25,nmodels):
         
-        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=1)
+        es = EarlyStopping(monitor='val_loss', mode='min', verbose=1, patience=2)
         
         if len(X_train.shape[1:])==1:
             in_shape=X_train.shape[1]
